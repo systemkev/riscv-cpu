@@ -3,42 +3,42 @@
 // Author      : Kevin Toledo Fernandez / GitHub: ktf-repos
 // Date        : 2026-05-22
 // Project     : RISC-V 32-bit Processor
-// Description : Arithmetic Logic Unit. Implements RISC-V RV32I second_operandase integer 
+// Description : Arithmetic Logic Unit. Implements RISC-V RV32I i_second_operandase integer 
 //               instructions. Combinational logic only.
 //
 // License     : MIT
 // ============================================================================
 
-import alu_pkg::*;
+import common_pkg::*;
 
 module ALU (
-    input logic [31:0] first_operand, 
-    input logic [31:0] second_operand, 
-    input logic [3:0] operation,
+    input   logic [31:0]    i_first_operand, 
+    input   logic [31:0]    i_second_operand, 
+    input   t_alu_ops       i_operation,
 
-    output logic [31:0] result,
-    output logic zero_flag
+    output  logic [31:0]    o_result,
+    output  logic           o_zero_flag
 );
     
     logic [4:0] shamt;
-    assign shamt = second_operand[4:0];
+    assign shamt = i_second_operand[4:0];
 
     always_comb begin 
-        case (operation)
-            ARITH_ADD:      result = first_operand + second_operand;
-            ARITH_SUB:      result = first_operand - second_operand;
-            LOGIC_AND:      result = first_operand & second_operand;
-            LOGIC_OR:       result = first_operand | second_operand;
-            LOGIC_XOR:      result = first_operand ^ second_operand;
-            SHIFT_L_LOGIC:  result = first_operand << shamt; 
-            SHIFT_R_LOGIC:  result = first_operand >> shamt;
-            SHIFT_R_ARITH:  result = $signed(first_operand) >>> shamt;
-            SET_LESS_U:     result = first_operand < second_operand;
-            SET_LESS_S:     result = $signed(first_operand) < $signed(second_operand);
-            default:        result = 0;
+        case (i_operation)
+            ARITH_ADD:      o_result = i_first_operand + i_second_operand;
+            ARITH_SUB:      o_result = i_first_operand - i_second_operand;
+            LOGIC_AND:      o_result = i_first_operand & i_second_operand;
+            LOGIC_OR:       o_result = i_first_operand | i_second_operand;
+            LOGIC_XOR:      o_result = i_first_operand ^ i_second_operand;
+            SHIFT_L_LOGIC:  o_result = i_first_operand << shamt; 
+            SHIFT_R_LOGIC:  o_result = i_first_operand >> shamt;
+            SHIFT_R_ARITH:  o_result = $signed(i_first_operand) >>> shamt;
+            SET_LESS_U:     o_result = i_first_operand < i_second_operand;
+            SET_LESS_S:     o_result = $signed(i_first_operand) < $signed(i_second_operand);
+            default:        o_result = 0;
         endcase
 
-        zero_flag = (result == 32'b0);
+        o_zero_flag = (o_result == 32'b0);
     end
 
 endmodule
