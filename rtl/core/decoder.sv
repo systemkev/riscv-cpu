@@ -1,6 +1,22 @@
+// ============================================================================
+// File Name   : decoder.sv
+// Author      : Kevin Toledo Fernandez / GitHub: ktf-repos
+// Date        : 2026-06-10
+// Project     : RISC-V 32-bit Processor
+// Description : Instruction Decode (ID) stage of the pipelined RISC-V RV32I 
+//               processor. Combinationally parses 32-bit instructions to extract 
+//               register addresses, generate sign-extended immediates, and 
+//               resolve control signals (ALU operations, memory access, branching).
+//               Contains sequential pipeline registers to forward decoded signals 
+//               to the Execute stage, with support for stalls and NOP flushes.
+//
+// License     : MIT
+// ============================================================================
+
 import common_pkg::*;
 
 module decoder (
+    // Global
     input   logic           i_clk,
     input   logic           i_rst,
     
@@ -13,6 +29,7 @@ module decoder (
     input   logic           i_stall,        // when 1 -> freeze, ignore new input
     input   logic           i_flush,        // when 1 -> inject NOP bubble on next cycle
 
+    // Decoded signals (to execute)
     output  logic           o_valid,        // wired to i_valid (1 -> fetch output is valid)
     output  logic [31:0]    o_pc,           // wired to i_pc (passes pc to execute stage)
     output  logic [4:0]     o_rs1,          // source register 1
@@ -26,7 +43,7 @@ module decoder (
     output  logic           o_mem_write,    // 1 -> store instruction, 0 -> o.w.
     output  t_mem_types     o_mem_type,     // signed LB, unsigned LB, signed LW, etc. (see common_pkg for def)
     output  logic           o_reg_write,    // 1 -> write back to register file
-    output  t_wr_to_reg     o_write_to,     // Enum defined in common_pkg (ALU, Mem Read, or PC+4 get written to rd)
+    output  t_wb_src     o_wr_from,     // Enum defined in common_pkg (ALU, Mem Read, or PC+4 get written to rd)
     output  logic           o_is_branch,    // 1 -> branch, 0 -> not a branch
     output  t_branches      o_branch_type,  // Type of comparison (BEQ, BNE, etc. Types defined in common_pkg)
     output  logic           o_is_jump,      // 1 -> jump/redirect, 0 -> not a jump
@@ -35,19 +52,19 @@ module decoder (
 );
 
 // Extract all the relevant information from the instruction
-logic [6:0] opcode  = i_instr[6:0];
-logic [4:0] rd      = i_instr[11:7];
-logic [2:0] funct3  = i_instr[14:12];
-logic [4:0] rs1     = i_instr[19:15];
-logic [4:0] rs2     = i_instr[24:20];
-logic [6:0] funct7  = i_instr[31:25];
+assign logic [6:0] opcode  = i_instr[6:0];
+assign logic [4:0] rd      = i_instr[11:7];
+assign logic [2:0] funct3  = i_instr[14:12];
+assign logic [4:0] rs1     = i_instr[19:15];
+assign logic [4:0] rs2     = i_instr[24:20];
+assign logic [6:0] funct7  = i_instr[31:25];
 
 // Decode the immediate
-logic [31:0] imm_i  = {{20{i_instr[31]}}, i_instr[31:20]};
-logic [31:0] imm_s  = {{20{i_instr[31]}}, i_instr[31:25], i_instr[11:7]};
-logic [31:0] imm_b  = {{19{i_instr[31]}}, i_instr[31], i_instr[7], i_instr[30:25], i_instr[11:8], 1'b0};
-logic [31:0] imm_u  = {i_instr[31:12], 12'b0};
-logic [31:0] imm_j  = {{12{i_instr[31]}}, i_instr[19:12], i_instr[20], i_instr[30:21], 1'b0};
+assign logic [31:0] imm_i  = {{20{i_instr[31]}}, i_instr[31:20]};
+assign logic [31:0] imm_s  = {{20{i_instr[31]}}, i_instr[31:25], i_instr[11:7]};
+assign logic [31:0] imm_b  = {{19{i_instr[31]}}, i_instr[31], i_instr[7], i_instr[30:25], i_instr[11:8], 1'b0};
+assign logic [31:0] imm_u  = {i_instr[31:12], 12'b0};
+assign logic [31:0] imm_j  = {{12{i_instr[31]}}, i_instr[19:12], i_instr[20], i_instr[30:21], 1'b0};
 
 logic           valid;        // wired to i_valid (1 -> fetch output is valid)
 logic [31:0]    pc;           // wired to i_pc (passes pc to execute stage)
@@ -59,7 +76,7 @@ logic           mem_read;     // 1 -> load instruction, 0 -> o.w.
 logic           mem_write;    // 1 -> store instruction, 0 -> o.w.
 t_mem_types     mem_type;     // signed LB, unsigned LB, signed LW, etc. (see common_pkg for def)
 logic           reg_write;    // 1 -> write back to register file
-t_wr_to_reg     write_to;     // Enum defined in common_pkg (ALU, Mem Read, or PC+4 get written to rd)
+t_wb_src        wb_data_src;  // Enum defined in common_pkg (ALU, Mem Read, or PC+4 get written to rd)
 logic           is_branch;    // 1 -> branch, 0 -> not a branch
 t_branches      branch_type;  // Type of comparison (BEQ, BNE, etc. Types defined in common_pkg)
 logic           is_jump;      // 1 -> jump/redirect, 0 -> not a jump
@@ -78,7 +95,7 @@ always_comb begin
     mem_write   = 1'b0;
     mem_type    = t_mem_types'('x);
     reg_write   = 1'b0;
-    write_to    = t_wr_to_reg'('x);
+    wb_data_src = t_wb_src'('x);
     is_branch   = 1'b0;
     branch_type = t_branches'('x);
     is_jump     = 1'b0;
@@ -91,14 +108,14 @@ always_comb begin
                 imm = imm_u;
                 alu_inp_1 = 1'b1;
                 reg_write = 1'b1;
-                write_to = WR_ALU_RES;
+                wb_data_src = ALU_RES;
             end
 
             OP_JALR: begin
                 if (funct3 == 3'b000) begin
                     imm = imm_i;
                     reg_write = 1'b1;
-                    write_to = WR_PC_PLUS_4;
+                    wb_data_src = PC_PLUS_4;
                     is_jump = 1'b1;
                     is_jalr = 1'b1;
                 end else
@@ -110,7 +127,7 @@ always_comb begin
                 imm             = imm_j;
                 alu_inp_1       = 1'b1;
                 reg_write       = 1'b1;
-                write_to        = WR_PC_PLUS_4;
+                wb_data_src     = WR_PC_PLUS_4;
                 is_jump         = 1'b1;
             end
 
@@ -136,7 +153,7 @@ always_comb begin
                 alu_inp_1 = 1'b0;
                 alu_inp_2 = 1'b1;
                 reg_write = 1'b1;
-                write_to = WR_ALU_RES;
+                wb_data_src = ALU_RES;
             end
 
             OP_STORE: begin
@@ -155,7 +172,7 @@ always_comb begin
                 imm             = imm_i;
                 mem_read        = 1'b1;
                 reg_write       = 1'b1;
-                write_to        = WR_READ_RES;
+                wb_data_src     = WR_READ_RES;
                 
                 case (funct3)
                     F3_LB:      mem_type    = S_LOAD_BYTE;
@@ -170,7 +187,7 @@ always_comb begin
             OP_ALU: begin
                 alu_inp_2   = 1'b0;
                 reg_write   = 1'b1;
-                write_to    = WR_ALU_RES;
+                wb_data_src   WR_ALU_RES;
                 
                 case (funct3)
                     F3_ADD: begin
@@ -238,7 +255,7 @@ always_comb begin
             OP_IMM: begin
                 imm         = imm_i;
                 reg_write   = 1'b1;
-                write_to    = WR_ALU_RES;
+                wb_data_src   WR_ALU_RES;
                 
                 case (funct3) 
                     F3_ADD:        alu_op = ARITH_ADD;
@@ -272,25 +289,25 @@ end
 
 always_ff @(posedge i_clk or posedge i_rst) begin 
     if (i_rst == 1'b1) begin 
-        o_valid         <= 1'b0;
-        o_pc            <= 'x;
-        o_rs1           <= 'x;
-        o_rs2           <= 'x;
-        o_rd            <= 'x;
-        o_imm           <= 'x;
-        o_alu_op        <= t_alu_ops'('x);
-        o_alu_inp_1     <= 'x;
-        o_alu_inp_2     <= 'x;
-        o_mem_read      <= 'x;
-        o_mem_write     <= 'x;
-        o_mem_type      <= t_mem_types'('x);
-        o_reg_write     <= 'x;
-        o_write_to      <= t_wr_to_reg'('x);
-        o_is_branch     <= 'x;
-        o_branch_type   <= t_branches'('x);
-        o_is_jump       <= 'x;
-        o_jalr          <= 'x;
-        o_illegal       <= 'x;
+        o_valid             <= 1'b0;
+        o_pc                <= 'x;
+        o_rs1               <= 'x;
+        o_rs2               <= 'x;
+        o_rd                <= 'x;
+        o_imm               <= 'x;
+        o_alu_op            <= t_alu_ops'('x);
+        o_alu_inp_1         <= 'x;
+        o_alu_inp_2         <= 'x;
+        o_mem_read          <= 'x;
+        o_mem_write         <= 'x;
+        o_mem_type          <= t_mem_types'('x);
+        o_reg_write         <= 'x;
+        o_wr_from          <= t_wb_src'('x);
+        o_is_branch         <= 'x;
+        o_branch_type       <= t_branches'('x);
+        o_is_jump           <= 'x;
+        o_jalr              <= 'x;
+        o_illegal           <= 'x;
     end else if (i_stall == 1'b0) begin
         if (i_flush == 1'b1) begin
             // Inject NOP
@@ -314,8 +331,7 @@ always_ff @(posedge i_clk or posedge i_rst) begin
             o_mem_write     <= mem_write;
             o_mem_type      <= mem_type;
             o_reg_write     <= reg_write;
-            o_write_to      <= write_to;
-            o_is_branch     <= is_branch;
+            o_wr_from      <= wb_data_src        o_is_branch     <= is_branch;
             o_branch_type   <= branch_type;
             o_is_jump       <= is_jump;
             o_jalr          <= is_jalr;

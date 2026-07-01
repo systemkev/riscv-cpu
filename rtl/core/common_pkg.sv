@@ -1,3 +1,16 @@
+// ============================================================================
+// File Name   : common_pkg.sv
+// Author      : Kevin Toledo Fernandez / GitHub: ktf-repos
+// Date        : 2026-06-10
+// Project     : RISC-V 32-bit Processor
+// Description : Centralized package definition for the RV32I processor. 
+//               Contains globally accessible typed enumerations (ALU operations, 
+//               branch conditions, memory access sizes, register names) and 
+//               constant parameters for instruction opcodes and function fields. 
+//
+// License     : MIT
+// ============================================================================
+
 package common_pkg;
     typedef enum logic [3:0] {
         ARITH_ADD,          // adds two 32 bit numbers
