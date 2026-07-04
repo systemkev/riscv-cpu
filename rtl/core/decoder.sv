@@ -43,7 +43,7 @@ module decoder (
     output  logic           o_mem_write,    // 1 -> store instruction, 0 -> o.w.
     output  t_mem_types     o_mem_type,     // signed LB, unsigned LB, signed LW, etc. (see common_pkg for def)
     output  logic           o_reg_write,    // 1 -> write back to register file
-    output  t_wb_src     o_wr_from,     // Enum defined in common_pkg (ALU, Mem Read, or PC+4 get written to rd)
+    output  t_wb_src        o_wr_from,     // Enum defined in common_pkg (ALU, Mem Read, or PC+4 get written to rd)
     output  logic           o_is_branch,    // 1 -> branch, 0 -> not a branch
     output  t_branches      o_branch_type,  // Type of comparison (BEQ, BNE, etc. Types defined in common_pkg)
     output  logic           o_is_jump,      // 1 -> jump/redirect, 0 -> not a jump
@@ -108,14 +108,14 @@ always_comb begin
                 imm = imm_u;
                 alu_inp_1 = 1'b1;
                 reg_write = 1'b1;
-                wb_data_src = ALU_RES;
+                wb_data_src = WR_ALU_RES;
             end
 
             OP_JALR: begin
                 if (funct3 == 3'b000) begin
                     imm = imm_i;
                     reg_write = 1'b1;
-                    wb_data_src = PC_PLUS_4;
+                    wb_data_src = WR_PC_PLUS_4;
                     is_jump = 1'b1;
                     is_jalr = 1'b1;
                 end else
@@ -153,7 +153,7 @@ always_comb begin
                 alu_inp_1 = 1'b0;
                 alu_inp_2 = 1'b1;
                 reg_write = 1'b1;
-                wb_data_src = ALU_RES;
+                wb_data_src = WR_ALU_RES;
             end
 
             OP_STORE: begin
@@ -187,7 +187,7 @@ always_comb begin
             OP_ALU: begin
                 alu_inp_2   = 1'b0;
                 reg_write   = 1'b1;
-                wb_data_src   WR_ALU_RES;
+                wb_data_src =  WR_ALU_RES;
                 
                 case (funct3)
                     F3_ADD: begin
@@ -255,7 +255,7 @@ always_comb begin
             OP_IMM: begin
                 imm         = imm_i;
                 reg_write   = 1'b1;
-                wb_data_src   WR_ALU_RES;
+                wb_data_src = WR_ALU_RES;
                 
                 case (funct3) 
                     F3_ADD:        alu_op = ARITH_ADD;
@@ -331,7 +331,8 @@ always_ff @(posedge i_clk or posedge i_rst) begin
             o_mem_write     <= mem_write;
             o_mem_type      <= mem_type;
             o_reg_write     <= reg_write;
-            o_wr_from      <= wb_data_src        o_is_branch     <= is_branch;
+            o_wr_from       <= wb_data_src;        
+            o_is_branch     <= is_branch;
             o_branch_type   <= branch_type;
             o_is_jump       <= is_jump;
             o_jalr          <= is_jalr;

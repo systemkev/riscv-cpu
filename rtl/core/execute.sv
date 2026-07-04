@@ -48,6 +48,12 @@ module execute (
     input   logic [31:0]    i_rs1_val,
     input   logic [31:0]    i_rs2_val,
 
+    // Forwarding logic
+    input   t_forwarding    i_forward_op_a, // 00 -> NO_HAZ, 01 -> WB forward, 10 -> MEM forward
+    input   t_forwarding    i_forward_op_b, // 00 -> NO_HAZ, 01 -> WB forward, 10 -> MEM forward
+    input   logic [31:0]    i_mem_fwd_data, 
+    input   logic [31:0]    i_wb_fwd_data,
+
     // To memory stage
     output  logic           o_valid,
     output  logic [31:0]    o_pc,
@@ -74,18 +80,40 @@ logic [31:0]        alu_result;
 logic               alu_zero;
 logic               branch_taken;
 
+// Resolve data hazards and determine what rs1 and rs2 should be
+logic [31:0]        resolved_rs1;
+logic [31:0]        resolved_rs2;
+
+always_comb begin 
+    // Forwarding mux for rs1 
+    case (i_forward_op_a)
+        NO_HAZ:     resolved_rs1 = i_rs1_val;
+        WB_FWD:     resolved_rs1 = i_wb_fwd_data;
+        MEM_FWD:    resolved_rs1 = i_mem_fwd_data;
+        default:    resolved_rs1 = i_rs1_val;
+    endcase 
+
+    // Forwarding mux for rs2
+    case (i_forward_op_b)
+        NO_HAZ:     resolved_rs2 = i_rs2_val;
+        WB_FWD:     resolved_rs2 = i_wb_fwd_data;
+        MEM_FWD:    resolved_rs2 = i_mem_fwd_data;
+        default:    resolved_rs2 = i_rs2_val;
+    endcase 
+end
+
 // Operand selection
 always_comb begin
     // Recall: if alu_inp_1 is 0 -> use rs1, 1 -> use the current PC (used for AUIPC, JAL)
     if (i_alu_inp_1 == 1'b0) begin
-        alu_op_1 = i_rs1_val;
+        alu_op_1 = resolved_rs1;
     end else begin
         alu_op_1 = i_pc;
     end
 
     // Recall: if alu_inp_2 is 0 -> use rs2, 1 -> use immediate
     if (i_alu_inp_2 == 1'b0) begin
-        alu_op_2 = i_rs2_val;
+        alu_op_2 = resolved_rs2;
     end else begin
         alu_op_2 = i_imm;
     end
@@ -104,16 +132,16 @@ ALU alu_core (
 always_comb begin
     branch_taken = 1'b0;
     case (i_branch_type)
-        BEQ:        branch_taken = (i_rs1_val == i_rs2_val);
-        BNE:        branch_taken = (i_rs1_val != i_rs2_val);
+        BEQ:        branch_taken = (resolved_rs1 == resolved_rs2);
+        BNE:        branch_taken = (resolved_rs1 != resolved_rs2);
 
         // Signed comparisons
-        BLT:        branch_taken = ($signed(i_rs1_val) < $signed(i_rs2_val));
-        BGE:        branch_taken = ($signed(i_rs1_val) >= $signed(i_rs2_val));
+        BLT:        branch_taken = ($signed(resolved_rs1) < $signed(resolved_rs2));
+        BGE:        branch_taken = ($signed(resolved_rs1) >= $signed(resolved_rs2));
 
         // Unsigned comparisons
-        BLTU:       branch_taken = (i_rs1_val < i_rs2_val);
-        BGEU:       branch_taken = (i_rs1_val >= i_rs2_val);
+        BLTU:       branch_taken = (resolved_rs1 < resolved_rs2);
+        BGEU:       branch_taken = (resolved_rs1 >= resolved_rs2);
 
         default:    branch_taken = 1'b0;
     endcase 
@@ -164,7 +192,7 @@ always_ff @(posedge i_clk, posedge i_rst) begin
             o_pc            <= i_pc;
             o_rd            <= i_rd;
             o_alu_result    <= alu_result;    // Pass the calculated math/address forward
-            o_rs2_val       <= i_rs2_val;     // Forwarded for STORE instructions
+            o_rs2_val       <= resolved_rs2;     // Forwarded for STORE instructions
             o_mem_read      <= i_mem_read;
             o_mem_write     <= i_mem_write;
             o_mem_type      <= i_mem_type;

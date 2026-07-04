@@ -40,7 +40,7 @@ package common_pkg;
         WR_ALU_RES,
         WR_READ_RES,
         WR_PC_PLUS_4
-    } t_wr_to_reg;
+    } t_wb_src;
 
     typedef enum logic [2:0] {
         BEQ,
@@ -50,6 +50,12 @@ package common_pkg;
         BLTU,
         BGEU
     } t_branches;
+
+    typedef enum logic [1:0] {
+        NO_HAZ,
+        WB_FWD,
+        MEM_FWD
+    } t_forwarding;
 
     typedef enum logic [4:0] {
         reg_x0_zero,
