@@ -1,6 +1,6 @@
 // ============================================================================
 // File Name   : decoder.sv
-// Author      : Kevin Toledo Fernandez / GitHub: ktf-repos
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
 // Date        : 2026-06-10
 // Project     : RISC-V 32-bit Processor
 // Description : Instruction Decode (ID) stage of the pipelined RISC-V RV32I 
@@ -43,12 +43,13 @@ module decoder (
     output  logic           o_mem_write,    // 1 -> store instruction, 0 -> o.w.
     output  t_mem_types     o_mem_type,     // signed LB, unsigned LB, signed LW, etc. (see common_pkg for def)
     output  logic           o_reg_write,    // 1 -> write back to register file
-    output  t_wb_src        o_wr_from,     // Enum defined in common_pkg (ALU, Mem Read, or PC+4 get written to rd)
+    output  t_wb_src        o_wr_from,      // Enum defined in common_pkg (ALU, Mem Read, or PC+4 get written to rd)
     output  logic           o_is_branch,    // 1 -> branch, 0 -> not a branch
     output  t_branches      o_branch_type,  // Type of comparison (BEQ, BNE, etc. Types defined in common_pkg)
     output  logic           o_is_jump,      // 1 -> jump/redirect, 0 -> not a jump
     output  logic           o_jalr,         // 1 -> when instruction is JALR, 0 -> o.w.
-    output  logic           o_illegal       // 1 -> not a RV32I instruction, 0 -> o.w.
+    output  logic           o_illegal,       // 1 -> not a RV32I instruction, 0 -> o.w.
+    output  logic [31:0]    o_pc_plus_4
 );
 
 // Extract all the relevant information from the instruction
@@ -80,8 +81,10 @@ t_wb_src        wb_data_src;  // Enum defined in common_pkg (ALU, Mem Read, or P
 logic           is_branch;    // 1 -> branch, 0 -> not a branch
 t_branches      branch_type;  // Type of comparison (BEQ, BNE, etc. Types defined in common_pkg)
 logic           is_jump;      // 1 -> jump/redirect, 0 -> not a jump
-logic           is_jalr;         // 1 -> when instruction is JALR, 0 -> o.w.
-logic           illegal;       // 1 -> not a RV32I instruction, 0 -> o.w.
+logic           is_jalr;      // 1 -> when instruction is JALR, 0 -> o.w.
+logic           illegal;      // 1 -> not a RV32I instruction, 0 -> o.w.
+logic           use_rs1; 
+logic           use_rs2;
 
 always_comb begin
     // Default values (NOP: addi x0, x0, 0)
@@ -101,25 +104,31 @@ always_comb begin
     is_jump     = 1'b0;
     is_jalr     = 1'b0;
     illegal     = 1'b0;
+    use_rs1     = 1'b1;
+    use_rs2     = 1'b1;
     if (i_valid) begin
         valid   = 1'b1;
         case(opcode)
             OP_AUIPC: begin
-                imm = imm_u;
-                alu_inp_1 = 1'b1;
-                reg_write = 1'b1;
+                imm         = imm_u;
+                alu_inp_1   = 1'b1;
+                reg_write   = 1'b1;
+                use_rs1     = 1'b0;
+                use_rs2     = 1'b0;
                 wb_data_src = WR_ALU_RES;
             end
 
             OP_JALR: begin
                 if (funct3 == 3'b000) begin
-                    imm = imm_i;
-                    reg_write = 1'b1;
+                    imm         = imm_i;
+                    reg_write   = 1'b1;
                     wb_data_src = WR_PC_PLUS_4;
-                    is_jump = 1'b1;
-                    is_jalr = 1'b1;
+                    is_jump     = 1'b1;
+                    is_jalr     = 1'b1;
+                    use_rs1     = 1'b1;
+                    use_rs2     = 1'b0;
                 end else
-                    illegal = 1'b1;
+                    illegal     = 1'b1;
             end
 
             OP_JAL: begin
@@ -129,6 +138,8 @@ always_comb begin
                 reg_write       = 1'b1;
                 wb_data_src     = WR_PC_PLUS_4;
                 is_jump         = 1'b1;
+                use_rs1         = 1'b0;
+                use_rs2         = 1'b0;
             end
 
             OP_BRANCH: begin
@@ -149,11 +160,13 @@ always_comb begin
             end
 
             OP_LUI: begin
-                imm = imm_u;
-                alu_inp_1 = 1'b0;
-                alu_inp_2 = 1'b1;
-                reg_write = 1'b1;
+                imm         = imm_u;
+                alu_inp_1   = 1'b0;
+                alu_inp_2   = 1'b1;
+                reg_write   = 1'b1;
                 wb_data_src = WR_ALU_RES;
+                use_rs1     = 1'b0;
+                use_rs2     = 1'b0;
             end
 
             OP_STORE: begin
@@ -173,6 +186,8 @@ always_comb begin
                 mem_read        = 1'b1;
                 reg_write       = 1'b1;
                 wb_data_src     = WR_READ_RES;
+                use_rs1         = 1'b1;
+                use_rs2         = 1'b0;
                 
                 case (funct3)
                     F3_LB:      mem_type    = S_LOAD_BYTE;
@@ -256,6 +271,8 @@ always_comb begin
                 imm         = imm_i;
                 reg_write   = 1'b1;
                 wb_data_src = WR_ALU_RES;
+                use_rs1     = 1'b1;
+                use_rs2     = 1'b0;
                 
                 case (funct3) 
                     F3_ADD:        alu_op = ARITH_ADD;
@@ -265,12 +282,14 @@ always_comb begin
                     F3_OR:         alu_op = LOGIC_OR;
                     F3_AND:        alu_op = LOGIC_AND;
                     F3_SLL: begin
+                        imm = {27'b0, i_instr[24:20]};
                         case (funct7)
                             7'b0000000:     alu_op  = SHIFT_L_LOGIC;
                             default:        illegal = 1'b1;
                         endcase
                     end
                     F3_SR: begin
+                        imm = {27'b0, i_instr[24:20]};
                         case (funct7)
                             7'b0000000:     alu_op  = SHIFT_R_LOGIC;
                             7'b0100000:     alu_op  = SHIFT_R_ARITH;
@@ -287,57 +306,58 @@ always_comb begin
     end
 end
 
-always_ff @(posedge i_clk or posedge i_rst) begin 
+always_ff @(posedge i_clk) begin 
     if (i_rst == 1'b1) begin 
-        o_valid             <= 1'b0;
-        o_pc                <= 'x;
-        o_rs1               <= 'x;
-        o_rs2               <= 'x;
-        o_rd                <= 'x;
-        o_imm               <= 'x;
-        o_alu_op            <= t_alu_ops'('x);
-        o_alu_inp_1         <= 'x;
-        o_alu_inp_2         <= 'x;
-        o_mem_read          <= 'x;
-        o_mem_write         <= 'x;
-        o_mem_type          <= t_mem_types'('x);
-        o_reg_write         <= 'x;
-        o_wr_from          <= t_wb_src'('x);
-        o_is_branch         <= 'x;
-        o_branch_type       <= t_branches'('x);
-        o_is_jump           <= 'x;
-        o_jalr              <= 'x;
-        o_illegal           <= 'x;
+        o_valid         <= 1'b0;
+        o_pc            <= 32'd0;
+        o_rs1           <= 5'd0;
+        o_rs2           <= 5'd0;
+        o_rd            <= 5'd0;
+        o_imm           <= 32'd0;
+        o_alu_op        <= ARITH_ADD;     
+        o_alu_inp_1     <= 1'b0;
+        o_alu_inp_2     <= 1'b1;          
+        o_mem_read      <= 1'b0;
+        o_mem_write     <= 1'b0;
+        o_mem_type      <= S_LOAD_BYTE;   
+        o_reg_write     <= 1'b0;
+        o_wr_from       <= WR_ALU_RES;     
+        o_is_branch     <= 1'b0;
+        o_branch_type   <= BEQ;
+        o_is_jump       <= 1'b0;
+        o_jalr          <= 1'b0;
+        o_illegal       <= 1'b0;
+        o_pc_plus_4     <= 32'd0;
+    end else if (i_flush == 1'b1) begin
+        // Inject NOP
+        o_valid         <= 1'b0;
+        o_mem_write     <= 1'b0;
+        o_mem_read      <= 1'b0;
+        o_reg_write     <= 1'b0;
+        o_is_branch     <= 1'b0;
+        o_is_jump       <= 1'b0;
+        o_illegal       <= 1'b0;
     end else if (i_stall == 1'b0) begin
-        if (i_flush == 1'b1) begin
-            // Inject NOP
-            o_valid         <= 1'b0;
-            o_reg_write     <= 1'b0;
-            o_mem_write     <= 1'b0;
-            o_mem_read      <= 1'b0;
-            o_is_branch     <= 1'b0;
-            o_is_jump       <= 1'b0;
-        end else begin
-            o_valid         <= valid;
-            o_pc            <= pc;
-            o_rs1           <= (opcode == OP_LUI)? 5'b0 : rs1;
-            o_rs2           <= rs2;
-            o_rd            <= rd;
-            o_imm           <= imm;
-            o_alu_op        <= alu_op;
-            o_alu_inp_1     <= alu_inp_1;
-            o_alu_inp_2     <= alu_inp_2;
-            o_mem_read      <= mem_read;
-            o_mem_write     <= mem_write;
-            o_mem_type      <= mem_type;
-            o_reg_write     <= reg_write;
-            o_wr_from       <= wb_data_src;        
-            o_is_branch     <= is_branch;
-            o_branch_type   <= branch_type;
-            o_is_jump       <= is_jump;
-            o_jalr          <= is_jalr;
-            o_illegal       <= illegal;
-        end
+        o_valid         <= valid;
+        o_pc            <= pc;
+        o_rs1           <= use_rs1 ? rs1 : 5'd0;
+        o_rs2           <= use_rs2 ? rs2 : 5'd0;
+        o_rd            <= rd;
+        o_imm           <= imm;
+        o_alu_op        <= alu_op;
+        o_alu_inp_1     <= alu_inp_1;
+        o_alu_inp_2     <= alu_inp_2;
+        o_mem_read      <= mem_read;
+        o_mem_write     <= mem_write;
+        o_mem_type      <= mem_type;
+        o_reg_write     <= reg_write && (rd != 5'd0);
+        o_wr_from       <= wb_data_src;        
+        o_is_branch     <= is_branch;
+        o_branch_type   <= branch_type;
+        o_is_jump       <= is_jump;
+        o_jalr          <= is_jalr;
+        o_illegal       <= illegal;
+        o_pc_plus_4     <= pc + 32'd4;
     end
 end 
 endmodule

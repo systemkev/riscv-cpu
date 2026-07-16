@@ -1,6 +1,6 @@
 // ============================================================================
 // File Name   : memory.sv
-// Author      : Kevin Toledo Fernandez / GitHub: ktf-repos
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
 // Date        : 2026-06-16
 // Project     : RISC-V 32-bit Processor
 // Description : Memory (MEM) stage of the pipelined RISC-V RV32I processor. 

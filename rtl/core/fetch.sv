@@ -1,6 +1,6 @@
 // ============================================================================
 // File Name   : fetch.sv
-// Author      : Kevin Toledo Fernandez / GitHub: ktf-repos
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
 // Date        : 2026-06-16
 // Project     : RISC-V 32-bit Processor
 // Description : Instruction Fetch (IF) stage of the pipelined RISC-V RV32I 
@@ -18,44 +18,54 @@
 import common_pkg::*;
 
 module fetch (
-    input  logic            i_clk,
-    input  logic            i_rst,
-    input  logic            i_stall,
-    input  logic            i_redirect,        
-    input  logic [31:0]     i_redirect_target, 
+    input  logic            i_clk,          // Global system clock from FPGA 
+    input  logic            i_rst,          // Power-on reset or physical button reset
+    input  logic            i_stall,        // 1 -> pipeline must stall, 0 -> normal operation 
+    input  logic            i_redirect,     // 1 -> EXE stage determined we redirected, 0 -> normal operation 
+    input  logic [31:0]     i_target,       // Jump destination address
+    input  logic [31:0]     i_imem_data,    // Instruction fetched from iMem
 
-    output logic [31:0]     o_imem_addr,       
-    input  logic [31:0]     i_imem_data,       
-
-    output logic            o_valid,           
-    output logic [31:0]     o_pc,              
-    output logic [31:0]     o_instr            
+    output logic [31:0]     o_imem_addr,    // iMem address to fetch from         
+    output logic            o_valid,        // 1 -> instruction ready to be decoded, 0 -> normal operation
+    output logic [31:0]     o_pc,           // Current instruction address 
+    output logic [31:0]     o_instr         // Instruction to pass onto DEC stage 
 );
 
-logic [31:0]    pc_current      = 32'b0;
-logic [31:0]    pc_delayed      = 32'b0;
-logic           vld_delay       = 1'b0;     
+logic [31:0]    pc_cur;     // Current PC
+logic [31:0]    pc_dly;     // Delayed PC (aligns with 1 cycle BRAM delay)
+logic           valid;       
 
-always_ff @(posedge i_clk or posedge i_rst) begin
-    if (i_rst) begin
-        pc_current          <= 32'b0;
-        pc_delayed          <= 32'b0;
-        vld_delay           <= 1'b0;
-    end else if (~i_stall) begin 
-        if (i_redirect) begin
-            pc_current      <= i_redirect_target;
-            vld_delay       <= 1'b0;
-        end else begin
-            pc_delayed      <= pc_current;
-            pc_current      <= pc_current + 32'd4; 
-            vld_delay       <= 1'b1;
+// Skid buffer to hold instruction during a stall
+logic [31:0]    hold_instr;   
+logic           is_held;
+
+always_ff @(posedge i_clk) begin
+    if (i_rst == 1'b1) begin
+        pc_cur          <= RESET_VECTOR;
+        pc_dly          <= RESET_VECTOR;
+        valid           <= 1'b0;
+        hold_instr      <= RESET_VECTOR;
+        is_held         <= 1'b0;
+    end else if (i_redirect == 1'b1) begin 
+        pc_cur          <= i_target;
+        valid           <= 1'b0;
+        is_held         <= 1'b0; 
+    end else if (i_stall == 1'b1) begin 
+        if (is_held == 1'b0) begin
+            hold_instr  <= i_imem_data;
+            is_held     <= 1'b1;
         end
+    end else begin
+        pc_cur          <= pc_cur + 32'd4;
+        pc_dly          <= pc_cur;
+        valid           <= 1'b1;
+        is_held         <= 1'b0;
     end
 end
 
-assign o_imem_addr  = pc_current;
-assign o_instr      = i_imem_data;
-assign o_pc         = pc_delayed;
-assign o_valid      = vld_delay;
+assign o_imem_addr  = pc_cur;
+assign o_pc         = pc_dly;
+assign o_valid      = valid && !i_redirect;
+assign o_instr      = (is_held == 1'b1)? hold_instr : i_imem_data;
 
 endmodule

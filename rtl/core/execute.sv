@@ -1,6 +1,6 @@
 // ============================================================================
 // File Name   : execute.sv
-// Author      : Kevin Toledo Fernandez / GitHub: ktf-repos
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
 // Date        : 2026-06-16
 // Project     : RISC-V 32-bit Processor
 // Description : Execute (EX) stage of the pipelined RISC-V RV32I processor. 
@@ -69,9 +69,9 @@ module execute (
 
     // PC redirect (combination, goes to fetch stage)
     // Asserted same cycle branch/jump resolves
-    // Decode's flsuh is driven by this
+    // Decode's flush is driven by this
     output  logic           o_redirect, 
-    output  logic [31:0]    o_redirect_target
+    output  logic [31:0]    o_target
 );
 
 logic [31:0]        alu_op_1;
@@ -104,18 +104,12 @@ end
 
 // Operand selection
 always_comb begin
-    // Recall: if alu_inp_1 is 0 -> use rs1, 1 -> use the current PC (used for AUIPC, JAL)
-    if (i_alu_inp_1 == 1'b0) begin
-        alu_op_1 = resolved_rs1;
+    if (i_valid) begin
+        alu_op_1 = (i_alu_inp_1 == 1'b0) ? resolved_rs1 : i_pc;
+        alu_op_2 = (i_alu_inp_2 == 1'b0) ? resolved_rs2 : i_imm;
     end else begin
-        alu_op_1 = i_pc;
-    end
-
-    // Recall: if alu_inp_2 is 0 -> use rs2, 1 -> use immediate
-    if (i_alu_inp_2 == 1'b0) begin
-        alu_op_2 = resolved_rs2;
-    end else begin
-        alu_op_2 = i_imm;
+        alu_op_1 = 32'b0;
+        alu_op_2 = 32'b0;
     end
 end
 
@@ -148,58 +142,42 @@ always_comb begin
 end
 
 // Drive the redirect signal
-always_comb begin
-    o_redirect = i_valid & (i_is_jump | (i_is_branch & branch_taken));
-
-    // Default assignment to prevent latch inference
-    o_redirect_target = 32'b0;
-
-    if (o_redirect) begin
-        if (i_jalr) begin
-            // Mask the LSB to 0 for JALR
-            o_redirect_target = alu_result & 32'hFFFFFFFE;
-        end else begin
-            // Pass through normally for JAL and branches
-            o_redirect_target = alu_result;
-        end
-    end
-end 
+assign o_redirect   = i_valid & (i_is_jump | (i_is_branch & branch_taken));
+assign o_target     = i_jalr ? (alu_result & 32'hFFFFFFFE) : alu_result;
 
 // Clocked pipeline register
-always_ff @(posedge i_clk, posedge i_rst) begin 
+always_ff @(posedge i_clk) begin 
     if (i_rst == 1'b1) begin 
         o_valid             <= 1'b0;
-        o_pc                <= 'x;
-        o_rd                <= 'x;
-        o_alu_result        <= 'x;
-        o_rs2_val           <= 'x;
-        o_mem_read          <= 'x;
-        o_mem_write         <= 'x;
-        o_mem_type          <= t_mem_types'('x);
-        o_reg_write         <= 'x;
-        o_wb_src            <= t_wb_src'('x);
-        o_illegal           <= 'x;
+        o_pc                <= '0;
+        o_rd                <= '0;
+        o_alu_result        <= '0;
+        o_rs2_val           <= '0;
+        o_mem_read          <= '0;
+        o_mem_write         <= '0;
+        o_mem_type          <= S_LOAD_BYTE;
+        o_reg_write         <= '0;
+        o_wb_src            <= WR_ALU_RES;
+        o_illegal           <= '0;
+    end else if (i_flush == 1'b1) begin
+        // Inject NOP (Zero out write enables and valid flag)
+        o_valid         <= 1'b0;
+        o_mem_write     <= 1'b0;
+        o_mem_read      <= 1'b0;
+        o_reg_write     <= 1'b0;
     end else if (i_stall == 1'b0) begin
-        if (i_flush == 1'b1) begin
-            // Inject NOP (Zero out write enables and valid flag)
-            o_valid         <= 1'b0;
-            o_mem_write     <= 1'b0;
-            o_mem_read      <= 1'b0;
-            o_reg_write     <= 1'b0;
-        end else begin
-            // Normal operation
-            o_valid         <= i_valid;      
-            o_pc            <= i_pc;
-            o_rd            <= i_rd;
-            o_alu_result    <= alu_result;    // Pass the calculated math/address forward
-            o_rs2_val       <= resolved_rs2;     // Forwarded for STORE instructions
-            o_mem_read      <= i_mem_read;
-            o_mem_write     <= i_mem_write;
-            o_mem_type      <= i_mem_type;
-            o_reg_write     <= i_reg_write;
-            o_wb_src        <= i_wb_src;
-            o_illegal       <= i_illegal;
-        end
+        // Normal operation
+        o_valid         <= i_valid;      
+        o_pc            <= i_pc;
+        o_rd            <= i_rd;
+        o_alu_result    <= alu_result;      // Pass the calculated math/address forward
+        o_rs2_val       <= resolved_rs2;    // Forwarded for STORE instructions
+        o_mem_read      <= i_mem_read;
+        o_mem_write     <= i_mem_write;
+        o_mem_type      <= i_mem_type;
+        o_reg_write     <= i_reg_write;
+        o_wb_src        <= i_wb_src;
+        o_illegal       <= i_illegal;
     end
 end
 endmodule

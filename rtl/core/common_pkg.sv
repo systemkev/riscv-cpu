@@ -1,6 +1,6 @@
 // ============================================================================
 // File Name   : common_pkg.sv
-// Author      : Kevin Toledo Fernandez / GitHub: ktf-repos
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
 // Date        : 2026-06-10
 // Project     : RISC-V 32-bit Processor
 // Description : Centralized package definition for the RV32I processor. 
@@ -133,5 +133,7 @@ package common_pkg;
         F3_BGE      = 3'b101,
         F3_BLTU     = 3'b110,
         F3_BGEU     = 3'b111;
+
+    localparam logic [31:0] RESET_VECTOR = 32'h0;
 
 endpackage

@@ -1,6 +1,6 @@
 // ============================================================================
 // File Name   : reg_file.sv
-// Author      : Kevin Toledo Fernandez / GitHub: ktf-repos
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
 // Date        : 2026-05-23
 // Project     : RISC-V 32-bit Processor
 // Description : 32x32 synchronous register file with two async read ports and
