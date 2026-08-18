@@ -70,7 +70,7 @@ always_comb begin
     end
 end
 
-always_ff @(posedge i_clk or posedge i_rst) begin
+always_ff @(posedge i_clk) begin
     if (i_rst) begin
         o_wb_valid      <= 1'b0;
         o_wb_illegal    <= 1'b0;
