@@ -1,0 +1,2007 @@
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\alu.sv ===
+// ============================================================================
+// File Name   : alu.sv
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
+// Date        : 2026-05-22
+// Project     : RISC-V 32-bit Processor
+// Description : Arithmetic Logic Unit. Implements RISC-V RV32I i_second_operandase integer 
+//               instructions. Combinational logic only.
+//
+// License     : MIT
+// ============================================================================
+
+import common_pkg::*;
+
+module ALU (
+    input   logic [31:0]    i_first_operand, 
+    input   logic [31:0]    i_second_operand, 
+    input   t_alu_ops       i_operation,
+
+    output  logic [31:0]    o_result,
+    output  logic           o_zero_flag
+);
+    
+    logic [4:0] shamt;
+    assign shamt = i_second_operand[4:0];
+
+    always_comb begin 
+        case (i_operation)
+            ARITH_ADD:      o_result = i_first_operand + i_second_operand;
+            ARITH_SUB:      o_result = i_first_operand - i_second_operand;
+            LOGIC_AND:      o_result = i_first_operand & i_second_operand;
+            LOGIC_OR:       o_result = i_first_operand | i_second_operand;
+            LOGIC_XOR:      o_result = i_first_operand ^ i_second_operand;
+            SHIFT_L_LOGIC:  o_result = i_first_operand << shamt; 
+            SHIFT_R_LOGIC:  o_result = i_first_operand >> shamt;
+            SHIFT_R_ARITH:  o_result = $signed(i_first_operand) >>> shamt;
+            SET_LESS_U:     o_result = i_first_operand < i_second_operand;
+            SET_LESS_S:     o_result = $signed(i_first_operand) < $signed(i_second_operand);
+            default:        o_result = 0;
+        endcase
+
+        o_zero_flag = (o_result == 32'b0);
+    end
+
+endmodule
+
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\common_pkg.sv ===
+// ============================================================================
+// File Name   : common_pkg.sv
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
+// Date        : 2026-06-10
+// Project     : RISC-V 32-bit Processor
+// Description : Centralized package definition for the RV32I processor. 
+//               Contains globally accessible typed enumerations (ALU operations, 
+//               branch conditions, memory access sizes, register names) and 
+//               constant parameters for instruction opcodes and function fields. 
+//
+// License     : MIT
+// ============================================================================
+
+package common_pkg;
+    typedef enum logic [3:0] {
+        ARITH_ADD,          // adds two 32 bit numbers
+        ARITH_SUB,          // subtracts two 32 bit numbers 
+        LOGIC_AND,          // logical AND
+        LOGIC_OR,           // logical OR
+        LOGIC_XOR,          // logical XOR
+        SHIFT_L_LOGIC,      // shift left logical
+        SHIFT_R_LOGIC,      // shift right logical
+        SHIFT_R_ARITH,      // shift right arithmetic
+        SET_LESS_U,         // performs less than comparison assuming unsigned integer
+        SET_LESS_S          // performs less than comparison assuming signed integer 
+    } t_alu_ops;
+
+    typedef enum logic [2:0] {
+        S_LOAD_BYTE,
+        U_LOAD_BYTE,
+        S_LOAD_WORD,
+        S_LOAD_HALF,
+        U_LOAD_HALF,
+        STORE_BYTE,
+        STORE_HALF,
+        STORE_WORD
+    } t_mem_types;
+
+    typedef enum logic [1:0] {
+        WR_ALU_RES,
+        WR_READ_RES,
+        WR_PC_PLUS_4
+    } t_wb_src;
+
+    typedef enum logic [2:0] {
+        BEQ,
+        BNE,
+        BLT,
+        BGE,
+        BLTU,
+        BGEU
+    } t_branches;
+
+    typedef enum logic [1:0] {
+        NO_HAZ,
+        WB_FWD,
+        MEM_FWD
+    } t_forwarding;
+
+    typedef enum logic [4:0] {
+        reg_x0_zero,
+        reg_x1_ra,
+        reg_x2_sp,
+        reg_x3_gp,
+        reg_x4_tp,
+        reg_x5_t0,
+        reg_x6_t1,
+        reg_x7_t2,
+        reg_x8_s0,
+        reg_x9_s1,
+        reg_x10_a0,
+        reg_x11_a1,
+        reg_x12_a2,
+        reg_x13_a3,
+        reg_x14_a4,
+        reg_x15_a5,
+        reg_x16_a6,
+        reg_x17_a7,
+        reg_x18_s2,
+        reg_x19_s3,
+        reg_x20_s4,
+        reg_x21_s5,
+        reg_x22_s6,
+        reg_x23_s7,
+        reg_x24_s8,
+        reg_x25_s9,
+        reg_x26_s10,
+        reg_x27_s11,
+        reg_x28_t3,
+        reg_x29_t4,
+        reg_x30_t5,
+        reg_x31_t6
+    } t_registers;
+
+    localparam logic [6:0]
+        OP_LOAD     = 7'b0000011,
+        OP_IMM      = 7'b0010011,
+        OP_AUIPC    = 7'b0010111,
+        OP_STORE    = 7'b0100011,
+        OP_ALU      = 7'b0110011,
+        OP_LUI      = 7'b0110111,
+        OP_BRANCH   = 7'b1100011,
+        OP_JALR     = 7'b1100111,
+        OP_JAL      = 7'b1101111,
+        OP_SYS      = 7'b1110011;
+    
+    localparam logic [2:0]
+        F3_ADD      = 3'b000,
+        F3_SLT      = 3'b010,
+        F3_SLTU     = 3'b011,
+        F3_XOR      = 3'b100,
+        F3_OR       = 3'b110,
+        F3_AND      = 3'b111,
+        F3_SLL      = 3'b001,
+        F3_SR       = 3'b101;
+    
+    localparam logic [2:0]
+        F3_LB       = 3'b000,
+        F3_LH       = 3'b001,
+        F3_LW       = 3'b010,
+        F3_LBU      = 3'b100,
+        F3_LHU      = 3'b101;
+    
+    localparam logic [2:0]
+        F3_SB       = 3'b000,
+        F3_SH       = 3'b001,
+        F3_SW       = 3'b010;
+    
+    localparam logic [2:0]
+        F3_BEQ      = 3'b000,
+        F3_BNE      = 3'b001,
+        F3_BLT      = 3'b100,
+        F3_BGE      = 3'b101,
+        F3_BLTU     = 3'b110,
+        F3_BGEU     = 3'b111;
+
+    localparam logic [31:0] RESET_VECTOR = 32'h0;
+
+endpackage
+
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\data_mem.sv ===
+// ============================================================================
+// File Name   : data_memory.sv
+// Description : 32-bit synchronous BRAM with byte-write enables.
+// ============================================================================
+
+module data_memory #(
+    parameter int DEPTH_WORDS = 4096,
+    parameter string INIT_FILE = ""
+)(
+    input  logic        i_clk,
+
+    input  logic [31:0] i_addr,
+
+    input  logic [31:0] i_wr_data,
+    input  logic        i_wr_en,
+    input  logic [3:0]  i_byte_en,
+
+    output logic [31:0] o_rd_data
+);
+
+    localparam int ADDR_WIDTH = $clog2(DEPTH_WORDS);
+
+    logic [31:0] memory [0:DEPTH_WORDS-1];
+
+    logic [ADDR_WIDTH-1:0] word_addr;
+
+    assign word_addr =
+        i_addr[ADDR_WIDTH+1:2];
+
+    initial begin
+        if (INIT_FILE != "")
+            $readmemh(INIT_FILE, memory);
+    end
+
+    always_ff @(posedge i_clk) begin
+
+        // ------------------------------------------------------------
+        // Synchronous read
+        // ------------------------------------------------------------
+
+        o_rd_data <= memory[word_addr];
+
+        // ------------------------------------------------------------
+        // Byte writes
+        // ------------------------------------------------------------
+
+        if (i_wr_en) begin
+
+            if (i_byte_en[0])
+                memory[word_addr][7:0]
+                    <= i_wr_data[7:0];
+
+            if (i_byte_en[1])
+                memory[word_addr][15:8]
+                    <= i_wr_data[15:8];
+
+            if (i_byte_en[2])
+                memory[word_addr][23:16]
+                    <= i_wr_data[23:16];
+
+            if (i_byte_en[3])
+                memory[word_addr][31:24]
+                    <= i_wr_data[31:24];
+
+        end
+
+    end
+
+endmodule
+
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\decoder.sv ===
+// ============================================================================
+// File Name   : decoder.sv
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
+// Date        : 2026-06-10
+// Project     : RISC-V 32-bit Processor
+// Description : Instruction Decode (ID) stage of the pipelined RISC-V RV32I 
+//               processor. Combinationally parses 32-bit instructions to extract 
+//               register addresses, generate sign-extended immediates, and 
+//               resolve control signals (ALU operations, memory access, branching).
+//               Contains sequential pipeline registers to forward decoded signals 
+//               to the Execute stage, with support for stalls and NOP flushes.
+//
+// License     : MIT
+// ============================================================================
+
+import common_pkg::*;
+
+module decoder (
+    // Global
+    input   logic           i_clk,
+    input   logic           i_rst,
+    
+    // From fetch state
+    input   logic           i_valid,        // 0 -> fetch output is invalid, 1 -> fetch output is valid
+    input   logic [31:0]    i_pc,           // PC of instruction being decoded
+    input   logic [31:0]    i_instr,        // output from fetch (instr to decode)
+
+    // Pipeline control
+    input   logic           i_stall,        // when 1 -> freeze, ignore new input
+    input   logic           i_flush,        // when 1 -> inject NOP bubble on next cycle
+
+    // Decoded signals (to execute)
+    output  logic           o_valid,        // wired to i_valid (1 -> fetch output is valid)
+    output  logic [31:0]    o_pc,           // wired to i_pc (passes pc to execute stage)
+    output  logic [4:0]     o_rs1,          // source register 1
+    output  logic [4:0]     o_rs2,          // source register 2
+    output  logic [4:0]     o_rd,           // destination register
+    output  logic [31:0]    o_imm,          // value of immediate
+    output  t_alu_ops       o_alu_op,       // operation to be performed by ALU 
+    output  logic           o_alu_inp_1,    // 0 -> use rs1, 1 -> use the current PC (used for AUIPC, JAL)
+    output  logic           o_alu_inp_2,    // 0 -> use rs2, 1 -> use immediate
+    output  logic           o_mem_read,     // 1 -> load instruction, 0 -> o.w.
+    output  logic           o_mem_write,    // 1 -> store instruction, 0 -> o.w.
+    output  t_mem_types     o_mem_type,     // signed LB, unsigned LB, signed LW, etc. (see common_pkg for def)
+    output  logic           o_reg_write,    // 1 -> write back to register file
+    output  t_wb_src        o_wr_from,      // Enum defined in common_pkg (ALU, Mem Read, or PC+4 get written to rd)
+    output  logic           o_is_branch,    // 1 -> branch, 0 -> not a branch
+    output  t_branches      o_branch_type,  // Type of comparison (BEQ, BNE, etc. Types defined in common_pkg)
+    output  logic           o_is_jump,      // 1 -> jump/redirect, 0 -> not a jump
+    output  logic           o_jalr,         // 1 -> when instruction is JALR, 0 -> o.w.
+    output  logic           o_illegal,       // 1 -> not a RV32I instruction, 0 -> o.w.
+    output  logic [31:0]    o_pc_plus_4
+);
+
+logic           valid;        // wired to i_valid (1 -> fetch output is valid)
+logic [31:0]    pc;           // wired to i_pc (passes pc to execute stage)
+logic [31:0]    imm;          // value of immediate
+t_alu_ops       alu_op;       // operation to be performed by ALU 
+logic           alu_inp_1;    // 0 -> use rs1, 1 -> use the current PC (used for AUIPC, JAL)
+logic           alu_inp_2;    // 0 -> use rs2, 1 -> use immediate
+logic           mem_read;     // 1 -> load instruction, 0 -> o.w.
+logic           mem_write;    // 1 -> store instruction, 0 -> o.w.
+t_mem_types     mem_type;     // signed LB, unsigned LB, signed LW, etc. (see common_pkg for def)
+logic           reg_write;    // 1 -> write back to register file
+t_wb_src        wb_data_src;  // Enum defined in common_pkg (ALU, Mem Read, or PC+4 get written to rd)
+logic           is_branch;    // 1 -> branch, 0 -> not a branch
+t_branches      branch_type;  // Type of comparison (BEQ, BNE, etc. Types defined in common_pkg)
+logic           is_jump;      // 1 -> jump/redirect, 0 -> not a jump
+logic           is_jalr;      // 1 -> when instruction is JALR, 0 -> o.w.
+logic           illegal;      // 1 -> not a RV32I instruction, 0 -> o.w.
+logic           use_rs1; 
+logic           use_rs2;
+
+logic [6:0] opcode;
+logic [4:0] rd;
+logic [2:0] funct3;
+logic [4:0] rs1;
+logic [4:0] rs2;
+logic [6:0] funct7;
+
+logic [31:0] imm_i;
+logic [31:0] imm_s;
+logic [31:0] imm_b;
+logic [31:0] imm_u;
+logic [31:0] imm_j;
+
+// Extract all the relevant information from the instruction
+assign opcode  = i_instr[6:0];
+assign rd      = i_instr[11:7];
+assign funct3  = i_instr[14:12];
+assign rs1     = i_instr[19:15];
+assign rs2     = i_instr[24:20];
+assign funct7  = i_instr[31:25];
+
+// Decode the immediate
+assign imm_i  = {{20{i_instr[31]}}, i_instr[31:20]};
+assign imm_s  = {{20{i_instr[31]}}, i_instr[31:25], i_instr[11:7]};
+assign imm_b  = {{19{i_instr[31]}}, i_instr[31], i_instr[7], i_instr[30:25], i_instr[11:8], 1'b0};
+assign imm_u  = {i_instr[31:12], 12'b0};
+assign imm_j  = {{12{i_instr[31]}}, i_instr[19:12], i_instr[20], i_instr[30:21], 1'b0};
+
+always_comb begin
+    // Default values (NOP: addi x0, x0, 0)
+    valid       = 1'b0;
+    pc          = i_pc;
+    imm         = 32'b0;
+    alu_op      = ARITH_ADD;
+    alu_inp_1   = 1'b0;
+    alu_inp_2   = 1'b1;
+    mem_read    = 1'b0;
+    mem_write   = 1'b0;
+    mem_type    = t_mem_types'('x);
+    reg_write   = 1'b0;
+    wb_data_src = t_wb_src'('x);
+    is_branch   = 1'b0;
+    branch_type = t_branches'('x);
+    is_jump     = 1'b0;
+    is_jalr     = 1'b0;
+    illegal     = 1'b0;
+    use_rs1     = 1'b1;
+    use_rs2     = 1'b1;
+    if (i_valid) begin
+        valid   = 1'b1;
+        case(opcode)
+            OP_AUIPC: begin
+                imm         = imm_u;
+                alu_inp_1   = 1'b1;
+                reg_write   = 1'b1;
+                use_rs1     = 1'b0;
+                use_rs2     = 1'b0;
+                wb_data_src = WR_ALU_RES;
+            end
+
+            OP_JALR: begin
+                if (funct3 == 3'b000) begin
+                    imm         = imm_i;
+                    reg_write   = 1'b1;
+                    wb_data_src = WR_PC_PLUS_4;
+                    is_jump     = 1'b1;
+                    is_jalr     = 1'b1;
+                    use_rs1     = 1'b1;
+                    use_rs2     = 1'b0;
+                end else
+                    illegal     = 1'b1;
+            end
+
+            OP_JAL: begin
+                // set ALU to calculate the target address: PC + imm_j
+                imm             = imm_j;
+                alu_inp_1       = 1'b1;
+                reg_write       = 1'b1;
+                wb_data_src     = WR_PC_PLUS_4;
+                is_jump         = 1'b1;
+                use_rs1         = 1'b0;
+                use_rs2         = 1'b0;
+            end
+
+            OP_BRANCH: begin
+                // set ALU to calculate the target address: PC + imm_b
+                imm             = imm_b;
+                alu_inp_1       = 1'b1;
+                is_branch       = 1'b1;
+                
+                case(funct3)
+                    F3_BEQ:     branch_type     = BEQ;
+                    F3_BNE:     branch_type     = BNE;
+                    F3_BLT:     branch_type     = BLT;
+                    F3_BGE:     branch_type     = BGE;
+                    F3_BLTU:    branch_type     = BLTU;
+                    F3_BGEU:    branch_type     = BGEU;
+                    default:    illegal         = 1'b1;
+                endcase
+            end
+
+            OP_LUI: begin
+                imm         = imm_u;
+                alu_inp_1   = 1'b0;
+                alu_inp_2   = 1'b1;
+                reg_write   = 1'b1;
+                wb_data_src = WR_ALU_RES;
+                use_rs1     = 1'b0;
+                use_rs2     = 1'b0;
+            end
+
+            OP_STORE: begin
+                imm             = imm_s;
+                mem_write       = 1'b1;
+
+                case (funct3)
+                    F3_SB:      mem_type    = STORE_BYTE;
+                    F3_SH:      mem_type    = STORE_HALF;
+                    F3_SW:      mem_type    = STORE_WORD;
+                    default:    illegal     = 1'b1;
+                endcase 
+            end
+        
+            OP_LOAD: begin
+                imm             = imm_i;
+                mem_read        = 1'b1;
+                reg_write       = 1'b1;
+                wb_data_src     = WR_READ_RES;
+                use_rs1         = 1'b1;
+                use_rs2         = 1'b0;
+                
+                case (funct3)
+                    F3_LB:      mem_type    = S_LOAD_BYTE;
+                    F3_LH:      mem_type    = S_LOAD_HALF;
+                    F3_LW:      mem_type    = S_LOAD_WORD;
+                    F3_LBU:     mem_type    = U_LOAD_BYTE;
+                    F3_LHU:     mem_type    = U_LOAD_HALF;
+                    default:    illegal     = 1'b1;
+                endcase 
+            end
+
+            OP_ALU: begin
+                alu_inp_2   = 1'b0;
+                reg_write   = 1'b1;
+                wb_data_src =  WR_ALU_RES;
+                
+                case (funct3)
+                    F3_ADD: begin
+                        case (funct7)
+                            7'b0000000: alu_op      = ARITH_ADD;
+                            7'b0100000: alu_op      = ARITH_SUB;
+                            default:    illegal     = 1'b1;
+                        endcase 
+                    end
+
+                    F3_SR: begin
+                        case (funct7)
+                            7'b0000000: alu_op  = SHIFT_R_LOGIC;
+                            7'b0100000: alu_op  = SHIFT_R_ARITH;
+                            default:    illegal = 1'b1;
+                        endcase 
+                    end
+
+                    F3_SLL: begin
+                        case (funct7)
+                            7'b0000000: alu_op  = SHIFT_L_LOGIC;
+                            default:    illegal = 1'b1;
+                        endcase
+                    end
+
+                    F3_SLT: begin
+                        case (funct7)
+                            7'b0000000: alu_op = SET_LESS_S;
+                            default:    illegal = 1'b1;
+                        endcase 
+                    end
+
+                    F3_SLTU: begin
+                        case (funct7)
+                            7'b0000000: alu_op = SET_LESS_U;
+                            default:    illegal = 1'b1;
+                        endcase 
+                    end
+
+                    F3_XOR: begin
+                        case (funct7)
+                            7'b0000000: alu_op = LOGIC_XOR;
+                            default:    illegal = 1'b1;
+                        endcase 
+                    end
+
+                    F3_OR: begin
+                        case (funct7)
+                            7'b0000000: alu_op = LOGIC_OR;
+                            default:    illegal = 1'b1;
+                        endcase 
+                    end
+
+                    F3_AND: begin
+                        case (funct7)
+                            7'b0000000: alu_op = LOGIC_AND;
+                            default:    illegal = 1'b1;
+                        endcase 
+                    end
+
+                    default:            illegal = 1'b1;
+                endcase 
+            end
+        
+            OP_IMM: begin
+                imm         = imm_i;
+                reg_write   = 1'b1;
+                wb_data_src = WR_ALU_RES;
+                use_rs1     = 1'b1;
+                use_rs2     = 1'b0;
+                
+                case (funct3) 
+                    F3_ADD:        alu_op = ARITH_ADD;
+                    F3_SLT:        alu_op = SET_LESS_S;
+                    F3_SLTU:       alu_op = SET_LESS_U;
+                    F3_XOR:        alu_op = LOGIC_XOR;
+                    F3_OR:         alu_op = LOGIC_OR;
+                    F3_AND:        alu_op = LOGIC_AND;
+                    F3_SLL: begin
+                        imm = {27'b0, i_instr[24:20]};
+                        case (funct7)
+                            7'b0000000:     alu_op  = SHIFT_L_LOGIC;
+                            default:        illegal = 1'b1;
+                        endcase
+                    end
+                    F3_SR: begin
+                        imm = {27'b0, i_instr[24:20]};
+                        case (funct7)
+                            7'b0000000:     alu_op  = SHIFT_R_LOGIC;
+                            7'b0100000:     alu_op  = SHIFT_R_ARITH;
+                            default:        illegal = 1'b1; 
+                        endcase
+                    end
+                    default:        illegal = 1'b1;
+                endcase
+            end 
+
+            OP_SYS: illegal = 1'b1;
+            default: illegal = 1'b1;
+        endcase
+
+        // Illegal instructions must have no side effects
+        if (illegal) begin
+            reg_write   = 1'b0;
+            mem_read    = 1'b0;
+            mem_write   = 1'b0;
+            is_branch   = 1'b0;
+            is_jump     = 1'b0;
+            is_jalr     = 1'b0;
+        end
+    end
+end
+
+always_ff @(posedge i_clk) begin 
+    if (i_rst == 1'b1) begin 
+        o_valid         <= 1'b0;
+        o_pc            <= 32'd0;
+        o_rs1           <= 5'd0;
+        o_rs2           <= 5'd0;
+        o_rd            <= 5'd0;
+        o_imm           <= 32'd0;
+        o_alu_op        <= ARITH_ADD;     
+        o_alu_inp_1     <= 1'b0;
+        o_alu_inp_2     <= 1'b1;          
+        o_mem_read      <= 1'b0;
+        o_mem_write     <= 1'b0;
+        o_mem_type      <= S_LOAD_BYTE;   
+        o_reg_write     <= 1'b0;
+        o_wr_from       <= WR_ALU_RES;     
+        o_is_branch     <= 1'b0;
+        o_branch_type   <= BEQ;
+        o_is_jump       <= 1'b0;
+        o_jalr          <= 1'b0;
+        o_illegal       <= 1'b0;
+        o_pc_plus_4     <= 32'd0;
+    end else if (i_flush == 1'b1) begin
+        // Inject NOP
+        o_valid         <= 1'b0;
+        o_mem_write     <= 1'b0;
+        o_mem_read      <= 1'b0;
+        o_reg_write     <= 1'b0;
+        o_is_branch     <= 1'b0;
+        o_is_jump       <= 1'b0;
+        o_illegal       <= 1'b0;
+        o_jalr          <= 1'b0;
+    end else if (i_stall == 1'b0) begin
+        o_valid         <= valid;
+        o_pc            <= pc;
+        o_rs1           <= use_rs1 ? rs1 : 5'd0;
+        o_rs2           <= use_rs2 ? rs2 : 5'd0;
+        o_rd            <= rd;
+        o_imm           <= imm;
+        o_alu_op        <= alu_op;
+        o_alu_inp_1     <= alu_inp_1;
+        o_alu_inp_2     <= alu_inp_2;
+        o_mem_read      <= mem_read;
+        o_mem_write     <= mem_write;
+        o_mem_type      <= mem_type;
+        o_reg_write     <= reg_write && (rd != 5'd0);
+        o_wr_from       <= wb_data_src;        
+        o_is_branch     <= is_branch;
+        o_branch_type   <= branch_type;
+        o_is_jump       <= is_jump;
+        o_jalr          <= is_jalr;
+        o_illegal       <= illegal;
+        o_pc_plus_4     <= pc + 32'd4;
+    end
+end 
+endmodule
+
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\execute.sv ===
+// ============================================================================
+// File Name   : execute.sv
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
+// Date        : 2026-06-16
+// Project     : RISC-V 32-bit Processor
+// Description : Execute (EX) stage of the pipelined RISC-V RV32I processor. 
+//               Handles operand selection and instantiates the Arithmetic Logic
+//               Unit (ALU). Evaluates branch/jump conditions to generate 
+//               combinational PC redirection signals for the Fetch stage. 
+//               Contains sequential pipeline registers to forward control and 
+//               data signals to the Memory stage, supporting stalls and flushes.
+//
+// License     : MIT
+// ============================================================================
+
+import common_pkg::*;
+
+module execute (
+    input   logic           i_clk,
+    input   logic           i_rst,
+
+    // Pipeline control
+    input   logic           i_stall,        // when 1 -> freeze, ignore new input
+    input   logic           i_flush,        // when 1 -> inject NOP bubble on next cycle
+    
+    // From decode stage        
+    input   logic           i_valid,        // wired to i_valid (1 -> fetch output is valid)
+    input   logic [31:0]    i_pc,           // wired to i_pc (passes pc to execute stage)
+    input   logic [4:0]     i_rs1,          // source register 1
+    input   logic [4:0]     i_rs2,          // source register 2
+    input   logic [4:0]     i_rd,           // destination register
+    input   logic [31:0]    i_imm,          // value of immediate
+    input   t_alu_ops       i_alu_op,       // operation to be performed by ALU 
+    input   logic           i_alu_inp_1,    // 0 -> use rs1, 1 -> use the current PC (used for AUIPC, JAL)
+    input   logic           i_alu_inp_2,    // 0 -> use rs2, 1 -> use immediate
+    input   logic           i_mem_read,     // 1 -> load instruction, 0 -> o.w.
+    input   logic           i_mem_write,    // 1 -> store instruction, 0 -> o.w.
+    input   t_mem_types     i_mem_type,     // signed LB, unsigned LB, signed LW, etc. (see common_pkg for def)
+    input   logic           i_reg_write,    // 1 -> write back to register file
+    input   t_wb_src        i_wb_src,       // Enum defined in common_pkg (ALU, Mem Read, or PC+4 get written to rd)
+    input   logic           i_is_branch,    // 1 -> branch, 0 -> not a branch
+    input   t_branches      i_branch_type,  // Type of comparison (BEQ, BNE, etc. Types defined in common_pkg)
+    input   logic           i_is_jump,      // 1 -> jump/redirect, 0 -> not a jump
+    input   logic           i_jalr,         // 1 -> when instruction is JALR, 0 -> o.w.
+    input   logic           i_illegal,      // 1 -> not a RV32I instruction, 0 -> o.w.
+
+    // Register file signals
+    input   logic [31:0]    i_rs1_val,
+    input   logic [31:0]    i_rs2_val,
+
+    // Forwarding logic
+    input   t_forwarding    i_forward_op_a, // 00 -> NO_HAZ, 01 -> WB forward, 10 -> MEM forward
+    input   t_forwarding    i_forward_op_b, // 00 -> NO_HAZ, 01 -> WB forward, 10 -> MEM forward
+    input   logic [31:0]    i_mem_fwd_data, 
+    input   logic [31:0]    i_wb_fwd_data,
+
+    // To memory stage
+    output  logic           o_valid,
+    output  logic [31:0]    o_pc,
+    output  logic [4:0]     o_rd,
+    output  logic [31:0]    o_alu_result,   // memory address for load/store, ALU result for writeback
+    output  logic [31:0]    o_rs2_val,      // store data forwarded to MEM
+    output  logic           o_mem_read,
+    output  logic           o_mem_write,
+    output  t_mem_types     o_mem_type, 
+    output  logic           o_reg_write,
+    output  t_wb_src        o_wb_src,
+    output  logic           o_illegal,
+
+    // PC redirect (combination, goes to fetch stage)
+    // Asserted same cycle branch/jump resolves
+    // Decode's flush is driven by this
+    output  logic           o_redirect, 
+    output  logic [31:0]    o_target
+);
+
+logic [31:0]        alu_op_1;
+logic [31:0]        alu_op_2;
+logic [31:0]        alu_result;
+logic               alu_zero;
+logic               branch_taken;
+
+// Resolve data hazards and determine what rs1 and rs2 should be
+logic [31:0]        resolved_rs1;
+logic [31:0]        resolved_rs2;
+
+always_comb begin 
+    // Forwarding mux for rs1 
+    case (i_forward_op_a)
+        NO_HAZ:     resolved_rs1 = i_rs1_val;
+        WB_FWD:     resolved_rs1 = i_wb_fwd_data;
+        MEM_FWD:    resolved_rs1 = i_mem_fwd_data;
+        default:    resolved_rs1 = i_rs1_val;
+    endcase 
+
+    // Forwarding mux for rs2
+    case (i_forward_op_b)
+        NO_HAZ:     resolved_rs2 = i_rs2_val;
+        WB_FWD:     resolved_rs2 = i_wb_fwd_data;
+        MEM_FWD:    resolved_rs2 = i_mem_fwd_data;
+        default:    resolved_rs2 = i_rs2_val;
+    endcase 
+end
+
+// Operand selection
+always_comb begin
+    if (i_valid) begin
+        alu_op_1 = (i_alu_inp_1 == 1'b0) ? resolved_rs1 : i_pc;
+        alu_op_2 = (i_alu_inp_2 == 1'b0) ? resolved_rs2 : i_imm;
+    end else begin
+        alu_op_1 = 32'b0;
+        alu_op_2 = 32'b0;
+    end
+end
+
+// Instantiate the ALU and pass in its arguments
+ALU alu_core (
+    .i_first_operand            (alu_op_1),
+    .i_second_operand           (alu_op_2),
+    .i_operation                (i_alu_op),
+    .o_result                   (alu_result),
+    .o_zero_flag                (alu_zero)
+);
+
+// Branch comparator 
+always_comb begin
+    branch_taken = 1'b0;
+    case (i_branch_type)
+        BEQ:        branch_taken = (resolved_rs1 == resolved_rs2);
+        BNE:        branch_taken = (resolved_rs1 != resolved_rs2);
+
+        // Signed comparisons
+        BLT:        branch_taken = ($signed(resolved_rs1) < $signed(resolved_rs2));
+        BGE:        branch_taken = ($signed(resolved_rs1) >= $signed(resolved_rs2));
+
+        // Unsigned comparisons
+        BLTU:       branch_taken = (resolved_rs1 < resolved_rs2);
+        BGEU:       branch_taken = (resolved_rs1 >= resolved_rs2);
+
+        default:    branch_taken = 1'b0;
+    endcase 
+end
+
+// Drive the redirect signal
+assign o_redirect   = i_valid & (i_is_jump | (i_is_branch & branch_taken));
+assign o_target     = i_jalr ? (alu_result & 32'hFFFFFFFE) : alu_result;
+
+// Clocked pipeline register
+always_ff @(posedge i_clk) begin 
+    if (i_rst == 1'b1) begin 
+        o_valid             <= 1'b0;
+        o_pc                <= '0;
+        o_rd                <= '0;
+        o_alu_result        <= '0;
+        o_rs2_val           <= '0;
+        o_mem_read          <= '0;
+        o_mem_write         <= '0;
+        o_mem_type          <= S_LOAD_BYTE;
+        o_reg_write         <= '0;
+        o_wb_src            <= WR_ALU_RES;
+        o_illegal           <= '0;
+    end else if (i_flush == 1'b1) begin
+        // Inject NOP (Zero out write enables and valid flag)
+        o_valid         <= 1'b0;
+        o_pc            <= '0;
+        o_rd            <= '0;
+        o_alu_result    <= '0;
+        o_rs2_val       <= '0;
+        o_mem_read      <= 1'b0;
+        o_mem_write     <= 1'b0;
+        o_mem_type      <= S_LOAD_BYTE;
+        o_reg_write     <= 1'b0;
+        o_wb_src        <= WR_ALU_RES;
+        o_illegal       <= 1'b0;
+    end else if (i_stall == 1'b0) begin
+        // Normal operation
+        o_valid         <= i_valid;      
+        o_pc            <= i_pc;
+        o_rd            <= i_rd;
+        o_alu_result    <= alu_result;      // Pass the calculated math/address forward
+        o_rs2_val       <= resolved_rs2;    // Forwarded for STORE instructions
+        o_mem_read      <= i_mem_read;
+        o_mem_write     <= i_mem_write;
+        o_mem_type      <= i_mem_type;
+        o_reg_write     <= i_reg_write;
+        o_wb_src        <= i_wb_src;
+        o_illegal       <= i_illegal;
+    end
+end
+endmodule
+
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\fetch.sv ===
+// ============================================================================
+// File Name   : fetch.sv
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
+// Date        : 2026-06-16
+// Project     : RISC-V 32-bit Processor
+// Description : Instruction Fetch (IF) stage of the pipelined RISC-V RV32I 
+//               processor. Maintains the Program Counter (PC) and interfaces 
+//               with Instruction Memory to retrieve 32-bit instructions. 
+//               Computes sequential execution (PC + 4) while handling asynchronous 
+//               PC redirection from the Execute stage for branches and jumps. 
+//               Contains sequential pipeline registers to forward the PC and 
+//               fetched instruction to the Decode stage, supporting pipeline 
+//               stalls and flushes.
+//
+// License     : MIT
+// ============================================================================
+
+import common_pkg::*;
+
+module fetch (
+    input  logic            i_clk,          // Global system clock from FPGA 
+    input  logic            i_rst,          // Power-on reset or physical button reset
+    input  logic            i_stall,        // 1 -> pipeline must stall, 0 -> normal operation 
+    input  logic            i_redirect,     // 1 -> EXE stage determined we redirected, 0 -> normal operation 
+    input  logic [31:0]     i_target,       // Jump destination address
+    input  logic [31:0]     i_imem_data,    // Instruction fetched from iMem
+
+    output logic [31:0]     o_imem_addr,    // iMem address to fetch from         
+    output logic            o_valid,        // 1 -> instruction ready to be decoded, 0 -> normal operation
+    output logic [31:0]     o_pc,           // Current instruction address 
+    output logic [31:0]     o_instr         // Instruction to pass onto DEC stage 
+);
+
+logic [31:0]    pc_cur;     // Current PC
+logic [31:0]    pc_dly;     // Delayed PC (aligns with 1 cycle BRAM delay)
+logic           valid;       
+
+// Skid buffer to hold instruction during a stall
+logic [31:0]    hold_instr;   
+logic           is_held;
+
+always_ff @(posedge i_clk) begin
+    if (i_rst == 1'b1) begin
+        pc_cur          <= RESET_VECTOR;
+        pc_dly          <= RESET_VECTOR;
+        valid           <= 1'b0;
+        hold_instr      <= RESET_VECTOR;
+        is_held         <= 1'b0;
+    end else if (i_redirect == 1'b1) begin 
+        pc_cur          <= i_target;
+        valid           <= 1'b0;
+        is_held         <= 1'b0; 
+    end else if (i_stall == 1'b1) begin 
+        if (is_held == 1'b0) begin
+            hold_instr  <= i_imem_data;
+            is_held     <= 1'b1;
+        end
+    end else begin
+        pc_cur          <= pc_cur + 32'd4;
+        pc_dly          <= pc_cur;
+        valid           <= 1'b1;
+        is_held         <= 1'b0;
+    end
+end
+
+assign o_imem_addr  = pc_cur;
+assign o_pc         = pc_dly;
+assign o_valid      = valid && !i_redirect;
+assign o_instr      = (is_held == 1'b1)? hold_instr : i_imem_data;
+
+endmodule
+
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\hazard_unit.sv ===
+// ============================================================================
+// File Name   : hazard_unit.sv
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
+// Date        : 2026-07-04
+// Project     : RISC-V 32-bit Processor
+// Description : 
+//
+// License     : MIT
+// ============================================================================
+
+import common_pkg::*;
+
+module hazard_unit (
+    // Inputs from decode stage
+    input   logic [4:0]     i_id_rs1,
+    input   logic [4:0]     i_id_rs2,
+
+    // Inputs from execute stage
+    input   logic [4:0]     i_ex_rs1,
+    input   logic [4:0]     i_ex_rs2,
+    input   logic [4:0]     i_ex_rd,
+    input   logic           i_ex_mem_read,
+    input   logic           i_ex_redirect, 
+
+    // Inputs from memory stage
+    input   logic [4:0]     i_mem_rd,
+    input   logic           i_mem_reg_wr,
+
+    // Inputs from writeback stage
+    input   logic [4:0]     i_wb_rd,
+    input   logic           i_wb_reg_wr, 
+
+    // Outputs to execute stage
+    output  t_forwarding    o_forward_op_a,
+    output  t_forwarding    o_forward_op_b,
+
+    // Stall and flush signals
+    output  logic           o_fetch_stall,
+    output  logic           o_decode_stall,
+    output  logic           o_decode_flush,
+    output  logic           o_execute_flush
+);
+
+    logic load_use_hazard;
+
+    //////////////////////
+    // Forwarding Logic //
+    //////////////////////
+    always_comb begin
+        o_forward_op_a = NO_HAZ;
+        o_forward_op_b = NO_HAZ;
+
+        // Forward rs1 logic
+        if (i_mem_reg_wr == 1'b1 && i_mem_rd != 5'b0 && i_mem_rd == i_ex_rs1)
+            o_forward_op_a = MEM_FWD;
+        else if (i_wb_reg_wr == 1'b1 && i_wb_rd != 5'b0 && i_wb_rd == i_ex_rs1)
+            o_forward_op_a = WB_FWD;
+
+        // Forward rs2 logic
+        if (i_mem_reg_wr == 1'b1 && i_mem_rd != 5'b0 && i_mem_rd == i_ex_rs2) 
+            o_forward_op_b = MEM_FWD; 
+        else if (i_wb_reg_wr == 1'b1 && i_wb_rd != 5'b0 && i_wb_rd == i_ex_rs2) 
+            o_forward_op_b = WB_FWD;
+    end
+
+    ///////////////////////////
+    // Load Use Hazard Logic //
+    ///////////////////////////
+    always_comb begin 
+        load_use_hazard = 1'b0;
+
+        if (i_ex_mem_read == 1'b1 && i_ex_rd != 5'b0 && 
+            (i_ex_rd == i_id_rs1 || i_ex_rd == i_id_rs2)) begin
+            load_use_hazard = 1'b1;
+        end
+    end 
+
+    //////////////////////
+    // Pipeline Control //
+    //////////////////////
+    always_comb begin
+        o_fetch_stall       = 1'b0;
+        o_decode_stall      = 1'b0;
+        o_decode_flush      = 1'b0;
+        o_execute_flush     = 1'b0;
+
+        if (i_ex_redirect == 1'b1) begin
+            // Branch or Jump resolved.
+            // Kill the instruction currently in the Decode stage. 
+            // (Fetch handles its own kill via vld_delay).
+            o_decode_flush  = 1'b1;
+        end else if (load_use_hazard) begin
+            o_fetch_stall   = 1'b1;
+            o_decode_stall  = 1'b1;
+            o_execute_flush = 1'b1;
+        end 
+    end 
+endmodule
+
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\instruction_mem.sv ===
+// ============================================================================
+// File Name   : instruction_memory.sv
+// Description : Synchronous instruction BRAM for RV32I core.
+// ============================================================================
+
+module instruction_memory #(
+    parameter int DEPTH_WORDS = 4096,
+    parameter string INIT_FILE = ""
+)(
+    input  logic        i_clk,
+
+    input  logic [31:0] i_addr,
+
+    output logic [31:0] o_data
+);
+
+    localparam int ADDR_WIDTH = $clog2(DEPTH_WORDS);
+
+    logic [31:0] memory [0:DEPTH_WORDS-1];
+
+    logic [ADDR_WIDTH-1:0] word_addr;
+
+    // RV32I addresses are byte addresses.
+    // Each instruction is one 32-bit word = 4 bytes.
+    assign word_addr =
+        i_addr[ADDR_WIDTH+1:2];
+
+    // Optional initialization from .mem/.hex file
+    initial begin
+        if (INIT_FILE != "")
+            $readmemh(INIT_FILE, memory);
+    end
+
+    // One-cycle synchronous BRAM read
+    always_ff @(posedge i_clk) begin
+        o_data <= memory[word_addr];
+    end
+
+endmodule
+
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\memory.sv ===
+// ============================================================================
+// File Name   : memory.sv
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
+// Date        : 2026-06-16
+// Project     : RISC-V 32-bit Processor
+// Description : Memory (MEM) stage of the pipelined RISC-V RV32I processor.
+// ============================================================================
+
+import common_pkg::*;
+
+module memory (
+    // Global signals
+    input   logic           i_clk,
+    input   logic           i_rst,
+
+    // Pipeline control
+    input   logic           i_stall,
+    input   logic           i_flush,
+
+    // From Execute Stage
+    input   logic           i_valid,
+    input   logic [31:0]    i_pc,
+    input   logic [4:0]     i_rd,
+    input   logic [31:0]    i_alu_result,
+    input   logic [31:0]    i_rs2_val,
+    input   logic           i_mem_read,
+    input   logic           i_mem_write,
+    input   t_mem_types     i_mem_type,
+    input   logic           i_reg_write,
+    input   t_wb_src        i_wb_src,
+    input   logic           i_illegal,
+
+    // To BRAM
+    output  logic [31:0]    o_dmem_addr,
+    output  logic [31:0]    o_dmem_wr_data,
+    output  logic           o_dmem_wr_en,
+    output  logic [3:0]     o_dmem_byt_en,
+
+    // To Writeback Stage
+    output  logic           o_wb_valid,
+    output  logic [31:0]    o_wb_pc,
+    output  logic [4:0]     o_wb_rd,
+    output  logic [31:0]    o_wb_alu_res,
+    output  logic           o_wb_wr_en,
+    output  t_wb_src        o_wb_src,
+    output  t_mem_types     o_wb_mem_type,
+    output  logic           o_wb_illegal
+);
+
+
+    // ========================================================================
+    // Data-memory interface
+    // ========================================================================
+
+    // Address is always the effective address calculated by EX.
+    assign o_dmem_addr = i_alu_result;
+
+
+    // A store may modify memory only when the instruction is active and valid.
+    assign o_dmem_wr_en =
+        i_valid      &&
+        ~i_illegal   &&
+        i_mem_write  &&
+        ~i_stall     &&
+        ~i_flush     &&
+        ~i_rst;
+
+
+    // ========================================================================
+    // Store data alignment / byte enables
+    // ========================================================================
+
+    always_comb begin
+
+        o_dmem_wr_data = 32'b0;
+        o_dmem_byt_en  = 4'b0000;
+
+        if (
+            i_valid      &&
+            ~i_illegal   &&
+            i_mem_write  &&
+            ~i_stall     &&
+            ~i_flush     &&
+            ~i_rst
+        ) begin
+
+            case (i_mem_type)
+
+                // ------------------------------------------------------------
+                // SB
+                //
+                // The low byte of rs2 must be written regardless of address
+                // offset. Replication places that byte on every BRAM lane;
+                // byte-enable selects the actual destination lane.
+                // ------------------------------------------------------------
+
+                STORE_BYTE: begin
+
+                    o_dmem_wr_data =
+                        {4{i_rs2_val[7:0]}};
+
+                    o_dmem_byt_en =
+                        4'b0001 << i_alu_result[1:0];
+
+                end
+
+
+                // ------------------------------------------------------------
+                // SH
+                //
+                // For aligned halfword accesses:
+                //
+                // address[1] = 0 -> lanes 0/1
+                // address[1] = 1 -> lanes 2/3
+                //
+                // Replication ensures rs2[15:0] exists on either half.
+                // ------------------------------------------------------------
+
+                STORE_HALF: begin
+
+                    o_dmem_wr_data =
+                        {2{i_rs2_val[15:0]}};
+
+                    if (i_alu_result[1] == 1'b0)
+                        o_dmem_byt_en = 4'b0011;
+                    else
+                        o_dmem_byt_en = 4'b1100;
+
+                end
+
+
+                // ------------------------------------------------------------
+                // SW
+                // ------------------------------------------------------------
+
+                STORE_WORD: begin
+
+                    o_dmem_wr_data = i_rs2_val;
+                    o_dmem_byt_en  = 4'b1111;
+
+                end
+
+
+                default: begin
+
+                    o_dmem_wr_data = 32'b0;
+                    o_dmem_byt_en  = 4'b0000;
+
+                end
+
+            endcase
+
+        end
+
+    end
+
+
+    // ========================================================================
+    // MEM -> WB pipeline register
+    //
+    // Priority: reset > flush > stall > normal
+    // ========================================================================
+
+    always_ff @(posedge i_clk) begin
+
+        if (i_rst) begin
+
+            o_wb_valid      <= 1'b0;
+            o_wb_pc         <= 32'b0;
+            o_wb_rd         <= 5'b0;
+            o_wb_alu_res    <= 32'b0;
+
+            o_wb_wr_en      <= 1'b0;
+            o_wb_src        <= WR_ALU_RES;
+            o_wb_mem_type   <= S_LOAD_BYTE;
+            o_wb_illegal    <= 1'b0;
+
+        end
+
+        else if (i_flush) begin
+
+            // Inject a deterministic bubble.
+            o_wb_valid      <= 1'b0;
+            o_wb_pc         <= 32'b0;
+            o_wb_rd         <= 5'b0;
+            o_wb_alu_res    <= 32'b0;
+
+            o_wb_wr_en      <= 1'b0;
+            o_wb_src        <= WR_ALU_RES;
+            o_wb_mem_type   <= S_LOAD_BYTE;
+            o_wb_illegal    <= 1'b0;
+
+        end
+
+        else if (!i_stall) begin
+
+            o_wb_valid      <= i_valid;
+            o_wb_pc         <= i_pc;
+            o_wb_rd         <= i_rd;
+            o_wb_alu_res    <= i_alu_result;
+
+            o_wb_wr_en      <=
+                i_reg_write &&
+                ~i_illegal  &&
+                i_valid;
+
+            o_wb_src        <= i_wb_src;
+            o_wb_mem_type   <= i_mem_type;
+            o_wb_illegal    <= i_illegal;
+
+        end
+
+        // else:
+        // stall -> retain all MEM/WB pipeline registers
+
+    end
+
+
+endmodule
+
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\reg_file.sv ===
+// ============================================================================
+// File Name   : reg_file.sv
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
+// Date        : 2026-05-23
+// Project     : RISC-V 32-bit Processor
+// Description : 32x32 synchronous register file with two async read ports and
+//               one sync write port. x0 hardwired to zero.
+//
+// License     : MIT
+// ============================================================================
+ 
+module reg_file(
+    input logic         i_clk,
+ 
+    // To write to a register, we need its address and the value to write to it
+    input logic [31:0]  i_rd_val,
+    input logic [4:0]   i_rd_addr,
+ 
+    // To read two registers, we need two address, one for each read.
+    input logic [4:0]   i_rs1_addr,
+    input logic [4:0]   i_rs2_addr,
+ 
+    input logic         i_write_enable,     // Enable write to rd
+    input logic         i_rst,              // Reset for when system boots up
+ 
+    // Output for the reads
+    output logic [31:0] o_rs1_val,
+    output logic [31:0] o_rs2_val
+ 
+);
+    // RISC-V has 32 general purpose registers
+    // Recall: x0 is hardwired to 0.
+    logic [31:0] registers [32];
+ 
+    always_comb begin
+        // Reads are combinational. Reading x0 is hardwired to output 0
+        if(i_rs1_addr == 5'b0) 
+            o_rs1_val = 32'b0;
+        else if(i_write_enable && i_rs1_addr == i_rd_addr)
+            o_rs1_val = i_rd_val;
+        else
+            o_rs1_val = registers[i_rs1_addr];
+        
+        if(i_rs2_addr == 5'b0) 
+            o_rs2_val = 32'b0;
+        else if(i_write_enable && i_rs2_addr == i_rd_addr)
+            o_rs2_val = i_rd_val;
+        else
+            o_rs2_val = registers[i_rs2_addr];
+    end
+ 
+    always_ff @(posedge i_clk) begin
+        // Reset will write 0 to all registers
+ 
+        // Otherwise, on the rising edge, write i_rd_val into i_rd_addr
+        // if i_write_enable is enabled (i.e., 1)
+        if(i_rst) begin
+            for(int i = 0; i < 32; i++) begin
+                registers[i] <= 32'b0;
+            end
+        end else if(i_write_enable && i_rd_addr != 5'b0) begin
+            registers[i_rd_addr] <= i_rd_val;
+        end
+    end
+endmodule
+
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\riscv_core.sv ===
+// ============================================================================
+// File Name   : riscv_core.sv
+// Description : Top-level RV32I CPU core. Connects IF/ID/EX/MEM/WB,
+//               register file, forwarding, and hazard control.
+// ============================================================================
+
+import common_pkg::*;
+
+module riscv_core (
+    input  logic        i_clk,
+    input  logic        i_rst,
+
+    // Instruction memory interface
+    output logic [31:0] o_imem_addr,
+    input  logic [31:0] i_imem_data,
+
+    // Data memory interface
+    output logic [31:0] o_dmem_addr,
+    output logic [31:0] o_dmem_wr_data,
+    output logic        o_dmem_wr_en,
+    output logic [3:0]  o_dmem_byt_en,
+    input  logic [31:0] i_dmem_data
+);
+
+    // ========================================================================
+    // IF -> ID
+    // ========================================================================
+
+    logic        if_valid;
+    logic [31:0] if_pc;
+    logic [31:0] if_instr;
+
+    // ========================================================================
+    // ID -> EX
+    // ========================================================================
+
+    logic        id_valid;
+    logic [31:0] id_pc;
+
+    logic [4:0]  id_rs1;
+    logic [4:0]  id_rs2;
+    logic [4:0]  id_rd;
+
+    logic [31:0] id_imm;
+
+    t_alu_ops    id_alu_op;
+
+    logic        id_alu_inp_1;
+    logic        id_alu_inp_2;
+
+    logic        id_mem_read;
+    logic        id_mem_write;
+    t_mem_types  id_mem_type;
+
+    logic        id_reg_write;
+    t_wb_src     id_wb_src;
+
+    logic        id_is_branch;
+    t_branches   id_branch_type;
+
+    logic        id_is_jump;
+    logic        id_jalr;
+    logic        id_illegal;
+
+    logic [31:0] id_pc_plus_4;
+
+    // ========================================================================
+    // Register file read values
+    // ========================================================================
+
+    logic [31:0] rs1_val;
+    logic [31:0] rs2_val;
+
+    // ========================================================================
+    // EX -> MEM
+    // ========================================================================
+
+    logic        ex_valid;
+    logic [31:0] ex_pc;
+
+    logic [4:0]  ex_rd;
+
+    logic [31:0] ex_alu_result;
+    logic [31:0] ex_rs2_val;
+
+    logic        ex_mem_read;
+    logic        ex_mem_write;
+    t_mem_types  ex_mem_type;
+
+    logic        ex_reg_write;
+    t_wb_src     ex_wb_src;
+
+    logic        ex_illegal;
+
+    logic        ex_redirect;
+    logic [31:0] ex_target;
+
+    // ========================================================================
+    // MEM -> WB
+    // ========================================================================
+
+    logic        wb_valid;
+    logic [31:0] wb_pc;
+
+    logic [4:0]  wb_rd;
+
+    logic [31:0] wb_alu_res;
+
+    logic        wb_wr_en;
+    t_wb_src     wb_src;
+    t_mem_types  wb_mem_type;
+
+    logic        wb_illegal;
+
+    // ========================================================================
+    // WB -> Register file
+    // ========================================================================
+
+    logic        rf_wr_en;
+    logic [4:0]  rf_wr_addr;
+    logic [31:0] rf_wr_data;
+
+    // ========================================================================
+    // Hazard unit
+    // ========================================================================
+
+    t_forwarding forward_a;
+    t_forwarding forward_b;
+
+    logic fetch_stall;
+    logic decode_stall;
+
+    logic decode_flush;
+    logic execute_flush;
+
+    // ========================================================================
+    // Decode-stage register addresses used by load-use detector
+    //
+    // We cannot blindly use instruction[19:15] and [24:20], because those
+    // fields aren't source registers for every instruction.
+    // ========================================================================
+
+    logic [4:0] hazard_id_rs1;
+    logic [4:0] hazard_id_rs2;
+
+    always_comb begin
+
+        hazard_id_rs1 = 5'd0;
+        hazard_id_rs2 = 5'd0;
+
+        if (if_valid) begin
+
+            case (if_instr[6:0])
+
+                // rs1 + rs2
+                OP_ALU,
+                OP_BRANCH,
+                OP_STORE: begin
+                    hazard_id_rs1 = if_instr[19:15];
+                    hazard_id_rs2 = if_instr[24:20];
+                end
+
+                // rs1 only
+                OP_IMM,
+                OP_LOAD,
+                OP_JALR: begin
+                    hazard_id_rs1 = if_instr[19:15];
+                    hazard_id_rs2 = 5'd0;
+                end
+
+                // LUI, AUIPC, JAL do not consume registers
+                default: begin
+                    hazard_id_rs1 = 5'd0;
+                    hazard_id_rs2 = 5'd0;
+                end
+
+            endcase
+        end
+    end
+
+    // ========================================================================
+    // MEM forwarding value
+    //
+    // ALU instructions forward their ALU result.
+    // JAL/JALR forward PC+4.
+    //
+    // Loads cannot forward from MEM because the synchronous BRAM data does
+    // not arrive until WB. Load-use interlock handles this case.
+    // ========================================================================
+
+    logic [31:0] mem_forward_data;
+    logic        mem_can_forward;
+
+    always_comb begin
+
+        mem_forward_data = ex_alu_result;
+        mem_can_forward  = ex_reg_write;
+
+        case (ex_wb_src)
+
+            WR_ALU_RES: begin
+                mem_forward_data = ex_alu_result;
+            end
+
+            WR_PC_PLUS_4: begin
+                mem_forward_data = ex_pc + 32'd4;
+            end
+
+            WR_READ_RES: begin
+                // Load data is not available from this stage yet.
+                mem_forward_data = 32'd0;
+                mem_can_forward  = 1'b0;
+            end
+
+            default: begin
+                mem_forward_data = ex_alu_result;
+                mem_can_forward  = 1'b0;
+            end
+
+        endcase
+
+    end
+
+    // ========================================================================
+    // Fetch
+    // ========================================================================
+
+    fetch u_fetch (
+        .i_clk          (i_clk),
+        .i_rst          (i_rst),
+
+        .i_stall        (fetch_stall),
+
+        .i_redirect     (ex_redirect),
+        .i_target       (ex_target),
+
+        .i_imem_data    (i_imem_data),
+
+        .o_imem_addr    (o_imem_addr),
+
+        .o_valid        (if_valid),
+        .o_pc           (if_pc),
+        .o_instr        (if_instr)
+    );
+
+    // ========================================================================
+    // Decode
+    //
+    // Both redirect flushes and load-use bubbles kill the ID/EX contents.
+    //
+    // Your hazard signal named "execute_flush" really means:
+    //     inject a bubble INTO the Execute stage,
+    // which means flushing the decoder's ID/EX pipeline registers.
+    // ========================================================================
+
+    decoder u_decoder (
+        .i_clk          (i_clk),
+        .i_rst          (i_rst),
+
+        .i_valid        (if_valid),
+        .i_pc           (if_pc),
+        .i_instr        (if_instr),
+
+        .i_stall        (decode_stall),
+        .i_flush        (decode_flush | execute_flush),
+
+        .o_valid        (id_valid),
+        .o_pc           (id_pc),
+
+        .o_rs1          (id_rs1),
+        .o_rs2          (id_rs2),
+        .o_rd           (id_rd),
+
+        .o_imm          (id_imm),
+
+        .o_alu_op       (id_alu_op),
+        .o_alu_inp_1    (id_alu_inp_1),
+        .o_alu_inp_2    (id_alu_inp_2),
+
+        .o_mem_read     (id_mem_read),
+        .o_mem_write    (id_mem_write),
+        .o_mem_type     (id_mem_type),
+
+        .o_reg_write    (id_reg_write),
+        .o_wr_from      (id_wb_src),
+
+        .o_is_branch    (id_is_branch),
+        .o_branch_type  (id_branch_type),
+
+        .o_is_jump      (id_is_jump),
+        .o_jalr         (id_jalr),
+
+        .o_illegal      (id_illegal),
+
+        .o_pc_plus_4    (id_pc_plus_4)
+    );
+
+    // ========================================================================
+    // Register File
+    // ========================================================================
+
+    reg_file u_reg_file (
+        .i_clk          (i_clk),
+
+        .i_rd_val       (rf_wr_data),
+        .i_rd_addr      (rf_wr_addr),
+
+        .i_rs1_addr     (id_rs1),
+        .i_rs2_addr     (id_rs2),
+
+        .i_write_enable (rf_wr_en),
+
+        .i_rst          (i_rst),
+
+        .o_rs1_val      (rs1_val),
+        .o_rs2_val      (rs2_val)
+    );
+
+    // ========================================================================
+    // Execute
+    // ========================================================================
+
+    execute u_execute (
+        .i_clk              (i_clk),
+        .i_rst              (i_rst),
+
+        // With fixed-latency BRAM, MEM never backpressures EX.
+        .i_stall            (1'b0),
+
+        // Load-use bubbling occurs in ID/EX, not EX/MEM.
+        .i_flush            (1'b0),
+
+        .i_valid            (id_valid),
+
+        .i_pc               (id_pc),
+
+        .i_rs1              (id_rs1),
+        .i_rs2              (id_rs2),
+        .i_rd               (id_rd),
+
+        .i_imm              (id_imm),
+
+        .i_alu_op           (id_alu_op),
+        .i_alu_inp_1        (id_alu_inp_1),
+        .i_alu_inp_2        (id_alu_inp_2),
+
+        .i_mem_read         (id_mem_read),
+        .i_mem_write        (id_mem_write),
+        .i_mem_type         (id_mem_type),
+
+        .i_reg_write        (id_reg_write),
+        .i_wb_src           (id_wb_src),
+
+        .i_is_branch        (id_is_branch),
+        .i_branch_type      (id_branch_type),
+
+        .i_is_jump          (id_is_jump),
+        .i_jalr             (id_jalr),
+
+        .i_illegal          (id_illegal),
+
+        .i_rs1_val          (rs1_val),
+        .i_rs2_val          (rs2_val),
+
+        .i_forward_op_a     (forward_a),
+        .i_forward_op_b     (forward_b),
+
+        .i_mem_fwd_data     (mem_forward_data),
+        .i_wb_fwd_data      (rf_wr_data),
+
+        .o_valid            (ex_valid),
+        .o_pc               (ex_pc),
+
+        .o_rd               (ex_rd),
+
+        .o_alu_result       (ex_alu_result),
+        .o_rs2_val          (ex_rs2_val),
+
+        .o_mem_read         (ex_mem_read),
+        .o_mem_write        (ex_mem_write),
+        .o_mem_type         (ex_mem_type),
+
+        .o_reg_write        (ex_reg_write),
+        .o_wb_src           (ex_wb_src),
+
+        .o_illegal          (ex_illegal),
+
+        .o_redirect         (ex_redirect),
+        .o_target           (ex_target)
+    );
+
+    // ========================================================================
+    // Memory
+    // ========================================================================
+
+    memory u_memory (
+        .i_clk              (i_clk),
+        .i_rst              (i_rst),
+
+        .i_stall            (1'b0),
+        .i_flush            (1'b0),
+
+        .i_valid            (ex_valid),
+
+        .i_pc               (ex_pc),
+        .i_rd               (ex_rd),
+
+        .i_alu_result       (ex_alu_result),
+        .i_rs2_val          (ex_rs2_val),
+
+        .i_mem_read         (ex_mem_read),
+        .i_mem_write        (ex_mem_write),
+        .i_mem_type         (ex_mem_type),
+
+        .i_reg_write        (ex_reg_write),
+        .i_wb_src           (ex_wb_src),
+
+        .i_illegal          (ex_illegal),
+
+        .o_dmem_addr        (o_dmem_addr),
+        .o_dmem_wr_data     (o_dmem_wr_data),
+        .o_dmem_wr_en       (o_dmem_wr_en),
+        .o_dmem_byt_en      (o_dmem_byt_en),
+
+        .o_wb_valid         (wb_valid),
+        .o_wb_pc            (wb_pc),
+        .o_wb_rd            (wb_rd),
+        .o_wb_alu_res       (wb_alu_res),
+        .o_wb_wr_en         (wb_wr_en),
+        .o_wb_src           (wb_src),
+        .o_wb_mem_type      (wb_mem_type),
+        .o_wb_illegal       (wb_illegal)
+    );
+
+    // ========================================================================
+    // Writeback
+    // ========================================================================
+
+    writeback u_writeback (
+        .i_wb_valid         (wb_valid),
+
+        .i_wb_pc            (wb_pc),
+        .i_wb_rd            (wb_rd),
+
+        .i_wb_alu_res       (wb_alu_res),
+
+        .i_wb_wr_en         (wb_wr_en),
+        .i_wb_src           (wb_src),
+        .i_wb_mem_type      (wb_mem_type),
+        .i_wb_illegal       (wb_illegal),
+
+        .i_dmem_data        (i_dmem_data),
+
+        .o_rf_wr_en         (rf_wr_en),
+        .o_rf_rd_addr       (rf_wr_addr),
+        .o_rf_wr_data       (rf_wr_data)
+    );
+
+    // ========================================================================
+    // Hazard / forwarding unit
+    // ========================================================================
+
+    hazard_unit u_hazard (
+        // Current instruction waiting in ID
+        .i_id_rs1           (hazard_id_rs1),
+        .i_id_rs2           (hazard_id_rs2),
+
+        // Current instruction in EX
+        .i_ex_rs1           (id_rs1),
+        .i_ex_rs2           (id_rs2),
+        .i_ex_rd            (id_rd),
+
+        .i_ex_mem_read      (id_mem_read),
+
+        .i_ex_redirect      (ex_redirect),
+
+        // Current instruction in MEM
+        .i_mem_rd           (ex_rd),
+        .i_mem_reg_wr       (mem_can_forward),
+
+        // Current instruction in WB
+        .i_wb_rd            (wb_rd),
+        .i_wb_reg_wr        (wb_wr_en),
+
+        .o_forward_op_a     (forward_a),
+        .o_forward_op_b     (forward_b),
+
+        .o_fetch_stall      (fetch_stall),
+        .o_decode_stall     (decode_stall),
+
+        .o_decode_flush     (decode_flush),
+        .o_execute_flush    (execute_flush)
+    );
+
+endmodule
+
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\riscv_soc.sv ===
+// ============================================================================
+// File Name   : riscv_soc.sv
+// Description : RV32I core with local instruction and data BRAM.
+// ============================================================================
+
+module riscv_soc #(
+    parameter int IMEM_DEPTH = 4096,
+    parameter int DMEM_DEPTH = 4096,
+
+    parameter string IMEM_INIT_FILE = "",
+    parameter string DMEM_INIT_FILE = ""
+)(
+    input logic i_clk,
+    input logic i_rst,
+    input logic i_uart_rx,
+    output logic o_uart_tx
+);
+
+    // ========================================================================
+    // Instruction memory signals
+    // ========================================================================
+
+    logic [31:0] imem_addr;
+    logic [31:0] imem_data;
+
+    // ========================================================================
+    // Data memory signals
+    // ========================================================================
+
+    logic [31:0] dmem_addr;
+    logic [31:0] dmem_wr_data;
+    logic        dmem_wr_en;
+    logic [3:0]  dmem_byte_en;
+    logic [31:0] dmem_rd_data;
+
+    // ========================================================================
+    // CPU
+    // ========================================================================
+
+    riscv_core u_core (
+        .i_clk              (i_clk),
+        .i_rst              (i_rst),
+
+        .o_imem_addr        (imem_addr),
+        .i_imem_data        (imem_data),
+
+        .o_dmem_addr        (dmem_addr),
+        .o_dmem_wr_data     (dmem_wr_data),
+        .o_dmem_wr_en       (dmem_wr_en),
+        .o_dmem_byt_en      (dmem_byte_en),
+
+        .i_dmem_data        (dmem_rd_data)
+    );
+
+    // ========================================================================
+    // Instruction BRAM
+    // ========================================================================
+
+    instruction_memory #(
+        .DEPTH_WORDS        (IMEM_DEPTH),
+        .INIT_FILE          (IMEM_INIT_FILE)
+    ) u_imem (
+        .i_clk              (i_clk),
+        .i_addr             (imem_addr),
+        .o_data             (imem_data)
+    );
+
+    // ========================================================================
+    // Data BRAM
+    // ========================================================================
+
+    data_memory #(
+        .DEPTH_WORDS        (DMEM_DEPTH),
+        .INIT_FILE          (DMEM_INIT_FILE)
+    ) u_dmem (
+        .i_clk              (i_clk),
+
+        .i_addr             (dmem_addr),
+
+        .i_wr_data          (dmem_wr_data),
+        .i_wr_en            (dmem_wr_en),
+        .i_byte_en          (dmem_byte_en),
+
+        .o_rd_data          (dmem_rd_data)
+    );
+
+endmodule
+
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\writeback.sv ===
+// ============================================================================
+// File Name   : writeback.sv
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
+// Date        : 2026-06-30
+// Project     : RISC-V 32-bit Processor
+// Description : 
+//
+// License     : MIT
+// ============================================================================
+
+import common_pkg::*;
+
+module writeback (
+    // From Writeback Stage 
+    input   logic           i_wb_valid, 
+    input   logic [31:0]    i_wb_pc,
+    input   logic [4:0]     i_wb_rd,
+    input   logic [31:0]    i_wb_alu_res,
+    input   logic           i_wb_wr_en,
+    input   t_wb_src        i_wb_src,
+    input   t_mem_types     i_wb_mem_type,
+    input   logic           i_wb_illegal,
+
+    // Data from BRAM 
+    input   logic [31:0]    i_dmem_data,
+
+    // Outputs to Register File
+    output  logic           o_rf_wr_en,
+    output  logic [4:0]     o_rf_rd_addr,
+    output  logic [31:0]    o_rf_wr_data
+);
+
+    logic [31:0] formatted_mem_data;
+    logic [15:0] extracted_half;
+    logic [7:0]  extracted_byte;
+
+    always_comb begin
+        formatted_mem_data  = 32'b0;
+        extracted_byte      = 8'b0;
+        extracted_half      = 16'b0;
+
+        case (i_wb_alu_res[1:0])
+            2'b00:  extracted_byte = i_dmem_data[7:0];
+            2'b01:  extracted_byte = i_dmem_data[15:8];
+            2'b10:  extracted_byte = i_dmem_data[23:16];
+            2'b11:  extracted_byte = i_dmem_data[31:24];
+        endcase 
+
+        case (i_wb_alu_res[1])
+            1'b0:   extracted_half = i_dmem_data[15:0];
+            1'b1:   extracted_half = i_dmem_data[31:16];
+        endcase 
+
+        case (i_wb_mem_type)
+            S_LOAD_BYTE:    formatted_mem_data = {{24{extracted_byte[7]}}, extracted_byte};
+            U_LOAD_BYTE:    formatted_mem_data = {24'b0, extracted_byte};
+            S_LOAD_HALF:    formatted_mem_data = {{16{extracted_half[15]}}, extracted_half};
+            U_LOAD_HALF:    formatted_mem_data = {16'b0, extracted_half};
+            S_LOAD_WORD:    formatted_mem_data = i_dmem_data;
+            default:        formatted_mem_data = i_dmem_data;
+        endcase 
+    end
+
+    // Pass control signals directly to the register file
+    assign o_rf_wr_en       = i_wb_wr_en;
+    assign o_rf_rd_addr     = i_wb_rd;
+
+    // Multiplex the final data to write to the rf 
+    always_comb begin 
+        case (i_wb_src) 
+            WR_ALU_RES:         o_rf_wr_data = i_wb_alu_res;
+            WR_READ_RES:        o_rf_wr_data = formatted_mem_data;
+            WR_PC_PLUS_4:       o_rf_wr_data = i_wb_pc + 32'd4;
+            default:            o_rf_wr_data = 32'b0;
+        endcase
+    end
+
+endmodule 
+
