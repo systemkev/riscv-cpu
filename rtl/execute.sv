@@ -162,9 +162,16 @@ always_ff @(posedge i_clk) begin
     end else if (i_flush == 1'b1) begin
         // Inject NOP (Zero out write enables and valid flag)
         o_valid         <= 1'b0;
-        o_mem_write     <= 1'b0;
+        o_pc            <= '0;
+        o_rd            <= '0;
+        o_alu_result    <= '0;
+        o_rs2_val       <= '0;
         o_mem_read      <= 1'b0;
+        o_mem_write     <= 1'b0;
+        o_mem_type      <= S_LOAD_BYTE;
         o_reg_write     <= 1'b0;
+        o_wb_src        <= WR_ALU_RES;
+        o_illegal       <= 1'b0;
     end else if (i_stall == 1'b0) begin
         // Normal operation
         o_valid         <= i_valid;      

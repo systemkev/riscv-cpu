@@ -52,21 +52,6 @@ module decoder (
     output  logic [31:0]    o_pc_plus_4
 );
 
-// Extract all the relevant information from the instruction
-assign logic [6:0] opcode  = i_instr[6:0];
-assign logic [4:0] rd      = i_instr[11:7];
-assign logic [2:0] funct3  = i_instr[14:12];
-assign logic [4:0] rs1     = i_instr[19:15];
-assign logic [4:0] rs2     = i_instr[24:20];
-assign logic [6:0] funct7  = i_instr[31:25];
-
-// Decode the immediate
-assign logic [31:0] imm_i  = {{20{i_instr[31]}}, i_instr[31:20]};
-assign logic [31:0] imm_s  = {{20{i_instr[31]}}, i_instr[31:25], i_instr[11:7]};
-assign logic [31:0] imm_b  = {{19{i_instr[31]}}, i_instr[31], i_instr[7], i_instr[30:25], i_instr[11:8], 1'b0};
-assign logic [31:0] imm_u  = {i_instr[31:12], 12'b0};
-assign logic [31:0] imm_j  = {{12{i_instr[31]}}, i_instr[19:12], i_instr[20], i_instr[30:21], 1'b0};
-
 logic           valid;        // wired to i_valid (1 -> fetch output is valid)
 logic [31:0]    pc;           // wired to i_pc (passes pc to execute stage)
 logic [31:0]    imm;          // value of immediate
@@ -85,6 +70,34 @@ logic           is_jalr;      // 1 -> when instruction is JALR, 0 -> o.w.
 logic           illegal;      // 1 -> not a RV32I instruction, 0 -> o.w.
 logic           use_rs1; 
 logic           use_rs2;
+
+logic [6:0] opcode;
+logic [4:0] rd;
+logic [2:0] funct3;
+logic [4:0] rs1;
+logic [4:0] rs2;
+logic [6:0] funct7;
+
+logic [31:0] imm_i;
+logic [31:0] imm_s;
+logic [31:0] imm_b;
+logic [31:0] imm_u;
+logic [31:0] imm_j;
+
+// Extract all the relevant information from the instruction
+assign opcode  = i_instr[6:0];
+assign rd      = i_instr[11:7];
+assign funct3  = i_instr[14:12];
+assign rs1     = i_instr[19:15];
+assign rs2     = i_instr[24:20];
+assign funct7  = i_instr[31:25];
+
+// Decode the immediate
+assign imm_i  = {{20{i_instr[31]}}, i_instr[31:20]};
+assign imm_s  = {{20{i_instr[31]}}, i_instr[31:25], i_instr[11:7]};
+assign imm_b  = {{19{i_instr[31]}}, i_instr[31], i_instr[7], i_instr[30:25], i_instr[11:8], 1'b0};
+assign imm_u  = {i_instr[31:12], 12'b0};
+assign imm_j  = {{12{i_instr[31]}}, i_instr[19:12], i_instr[20], i_instr[30:21], 1'b0};
 
 always_comb begin
     // Default values (NOP: addi x0, x0, 0)
@@ -303,6 +316,16 @@ always_comb begin
             OP_SYS: illegal = 1'b1;
             default: illegal = 1'b1;
         endcase
+
+        // Illegal instructions must have no side effects
+        if (illegal) begin
+            reg_write   = 1'b0;
+            mem_read    = 1'b0;
+            mem_write   = 1'b0;
+            is_branch   = 1'b0;
+            is_jump     = 1'b0;
+            is_jalr     = 1'b0;
+        end
     end
 end
 
@@ -337,6 +360,7 @@ always_ff @(posedge i_clk) begin
         o_is_branch     <= 1'b0;
         o_is_jump       <= 1'b0;
         o_illegal       <= 1'b0;
+        o_jalr          <= 1'b0;
     end else if (i_stall == 1'b0) begin
         o_valid         <= valid;
         o_pc            <= pc;
