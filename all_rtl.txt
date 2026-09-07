@@ -44,6 +44,126 @@ module ALU (
 
 endmodule
 
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\branch_predictor.sv ===
+module branch_predictor #(
+    parameter int ENTRIES = 64
+)(
+    input  logic        i_clk,
+    input  logic        i_rst,
+    input  logic [31:0] i_fetch_pc,
+    output logic        o_pred_taken,
+    output logic [31:0] o_pred_target,
+    input  logic        i_resolve_valid,
+    input  logic [31:0] i_resolve_pc,
+    input  logic        i_resolve_is_branch,
+    input  logic        i_resolve_is_jump,
+    input  logic        i_resolve_taken,
+    input  logic [31:0] i_resolve_target,
+    input  logic        i_resolve_pred_taken,
+    input  logic [31:0] i_resolve_pred_target,
+    output logic        o_mispredict,
+    output logic [31:0] o_recovery_pc
+);
+
+    localparam int INDEX_BITS = $clog2(ENTRIES);
+    localparam int TAG_BITS   = 32 - INDEX_BITS - 2;
+
+    logic [ENTRIES-1:0] btb_valid;
+
+    (* ram_style = "distributed" *)
+    logic [TAG_BITS:0] btb_meta [0:ENTRIES-1];
+
+    (* ram_style = "distributed" *)
+    logic [31:0] btb_target [0:ENTRIES-1];
+
+    logic [1:0] bht [0:ENTRIES-1];
+
+    logic [INDEX_BITS-1:0] fetch_index;
+    logic [INDEX_BITS-1:0] resolve_index;
+    logic [TAG_BITS-1:0] fetch_tag;
+    logic [TAG_BITS-1:0] resolve_tag;
+    logic [TAG_BITS:0] fetch_meta;
+    logic [31:0] fetch_target;
+    logic [1:0] fetch_bht;
+    logic fetch_hit;
+
+    assign fetch_index   = i_fetch_pc[INDEX_BITS+1:2];
+    assign resolve_index = i_resolve_pc[INDEX_BITS+1:2];
+    assign fetch_tag     = i_fetch_pc[31:INDEX_BITS+2];
+    assign resolve_tag   = i_resolve_pc[31:INDEX_BITS+2];
+
+    assign fetch_meta   = btb_meta[fetch_index];
+    assign fetch_target = btb_target[fetch_index];
+    assign fetch_bht    = bht[fetch_index];
+
+    assign fetch_hit =
+        btb_valid[fetch_index] &&
+        (fetch_meta[TAG_BITS:1] == fetch_tag);
+
+    always_comb begin
+        o_pred_taken  = 1'b0;
+        o_pred_target = i_fetch_pc + 32'd4;
+
+        if (fetch_hit) begin
+            o_pred_target = fetch_target;
+
+            if (fetch_meta[0])
+                o_pred_taken = fetch_bht[1];
+            else
+                o_pred_taken = 1'b1;
+        end
+    end
+
+    always_comb begin
+        o_mispredict =
+            i_resolve_valid &&
+            (i_resolve_is_branch || i_resolve_is_jump) &&
+            (
+                (i_resolve_pred_taken != i_resolve_taken) ||
+                (
+                    i_resolve_taken &&
+                    i_resolve_pred_taken &&
+                    (i_resolve_pred_target != i_resolve_target)
+                )
+            );
+
+        if (i_resolve_taken)
+            o_recovery_pc = i_resolve_target;
+        else
+            o_recovery_pc = i_resolve_pc + 32'd4;
+    end
+
+    always_ff @(posedge i_clk) begin
+        if (i_rst) begin
+            btb_valid <= '0;
+        end else if (
+            i_resolve_valid &&
+            (i_resolve_is_branch || i_resolve_is_jump)
+        ) begin
+            btb_valid[resolve_index]  <= 1'b1;
+            btb_meta[resolve_index]   <= {resolve_tag, i_resolve_is_branch};
+            btb_target[resolve_index] <= i_resolve_target;
+
+            if (i_resolve_is_branch) begin
+                if (!btb_valid[resolve_index]) begin
+                    bht[resolve_index] <= i_resolve_taken ? 2'b10 : 2'b01;
+                end else begin
+                    case (bht[resolve_index])
+                        2'b00: bht[resolve_index] <= i_resolve_taken ? 2'b01 : 2'b00;
+                        2'b01: bht[resolve_index] <= i_resolve_taken ? 2'b10 : 2'b00;
+                        2'b10: bht[resolve_index] <= i_resolve_taken ? 2'b11 : 2'b01;
+                        2'b11: bht[resolve_index] <= i_resolve_taken ? 2'b11 : 2'b10;
+                        default: bht[resolve_index] <= i_resolve_taken ? 2'b10 : 2'b01;
+                    endcase
+                end
+            end else begin
+                bht[resolve_index] <= 2'b01;
+            end
+        end
+    end
+
+endmodule
+
 === FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\common_pkg.sv ===
 // ============================================================================
 // File Name   : common_pkg.sv
@@ -257,392 +377,398 @@ module data_memory #(
 endmodule
 
 === FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\decoder.sv ===
-// ============================================================================
-// File Name   : decoder.sv
-// Author      : Kevin Toledo Fernandez / GitHub: systemkev
-// Date        : 2026-06-10
-// Project     : RISC-V 32-bit Processor
-// Description : Instruction Decode (ID) stage of the pipelined RISC-V RV32I 
-//               processor. Combinationally parses 32-bit instructions to extract 
-//               register addresses, generate sign-extended immediates, and 
-//               resolve control signals (ALU operations, memory access, branching).
-//               Contains sequential pipeline registers to forward decoded signals 
-//               to the Execute stage, with support for stalls and NOP flushes.
-//
-// License     : MIT
-// ============================================================================
-
 import common_pkg::*;
 
 module decoder (
-    // Global
     input   logic           i_clk,
     input   logic           i_rst,
-    
-    // From fetch state
-    input   logic           i_valid,        // 0 -> fetch output is invalid, 1 -> fetch output is valid
-    input   logic [31:0]    i_pc,           // PC of instruction being decoded
-    input   logic [31:0]    i_instr,        // output from fetch (instr to decode)
+    input   logic           i_valid,
+    input   logic [31:0]    i_pc,
+    input   logic [31:0]    i_instr,
+    input   logic           i_pred_taken,
+    input   logic [31:0]    i_pred_target,
+    input   logic           i_stall,
+    input   logic           i_flush,
 
-    // Pipeline control
-    input   logic           i_stall,        // when 1 -> freeze, ignore new input
-    input   logic           i_flush,        // when 1 -> inject NOP bubble on next cycle
-
-    // Decoded signals (to execute)
-    output  logic           o_valid,        // wired to i_valid (1 -> fetch output is valid)
-    output  logic [31:0]    o_pc,           // wired to i_pc (passes pc to execute stage)
-    output  logic [4:0]     o_rs1,          // source register 1
-    output  logic [4:0]     o_rs2,          // source register 2
-    output  logic [4:0]     o_rd,           // destination register
-    output  logic [31:0]    o_imm,          // value of immediate
-    output  t_alu_ops       o_alu_op,       // operation to be performed by ALU 
-    output  logic           o_alu_inp_1,    // 0 -> use rs1, 1 -> use the current PC (used for AUIPC, JAL)
-    output  logic           o_alu_inp_2,    // 0 -> use rs2, 1 -> use immediate
-    output  logic           o_mem_read,     // 1 -> load instruction, 0 -> o.w.
-    output  logic           o_mem_write,    // 1 -> store instruction, 0 -> o.w.
-    output  t_mem_types     o_mem_type,     // signed LB, unsigned LB, signed LW, etc. (see common_pkg for def)
-    output  logic           o_reg_write,    // 1 -> write back to register file
-    output  t_wb_src        o_wr_from,      // Enum defined in common_pkg (ALU, Mem Read, or PC+4 get written to rd)
-    output  logic           o_is_branch,    // 1 -> branch, 0 -> not a branch
-    output  t_branches      o_branch_type,  // Type of comparison (BEQ, BNE, etc. Types defined in common_pkg)
-    output  logic           o_is_jump,      // 1 -> jump/redirect, 0 -> not a jump
-    output  logic           o_jalr,         // 1 -> when instruction is JALR, 0 -> o.w.
-    output  logic           o_illegal,       // 1 -> not a RV32I instruction, 0 -> o.w.
-    output  logic [31:0]    o_pc_plus_4
+    output  logic           o_valid,
+    output  logic [31:0]    o_pc,
+    output  logic [4:0]     o_rs1,
+    output  logic [4:0]     o_rs2,
+    output  logic [4:0]     o_rd,
+    output  logic [31:0]    o_imm,
+    output  t_alu_ops       o_alu_op,
+    output  logic           o_alu_inp_1,
+    output  logic           o_alu_inp_2,
+    output  logic           o_mem_read,
+    output  logic           o_mem_write,
+    output  t_mem_types     o_mem_type,
+    output  logic           o_reg_write,
+    output  t_wb_src        o_wr_from,
+    output  logic           o_is_branch,
+    output  t_branches      o_branch_type,
+    output  logic           o_is_jump,
+    output  logic           o_jalr,
+    output  logic           o_illegal,
+    output  logic [31:0]    o_pc_plus_4,
+    output  logic           o_pred_taken,
+    output  logic [31:0]    o_pred_target
 );
 
-logic           valid;        // wired to i_valid (1 -> fetch output is valid)
-logic [31:0]    pc;           // wired to i_pc (passes pc to execute stage)
-logic [31:0]    imm;          // value of immediate
-t_alu_ops       alu_op;       // operation to be performed by ALU 
-logic           alu_inp_1;    // 0 -> use rs1, 1 -> use the current PC (used for AUIPC, JAL)
-logic           alu_inp_2;    // 0 -> use rs2, 1 -> use immediate
-logic           mem_read;     // 1 -> load instruction, 0 -> o.w.
-logic           mem_write;    // 1 -> store instruction, 0 -> o.w.
-t_mem_types     mem_type;     // signed LB, unsigned LB, signed LW, etc. (see common_pkg for def)
-logic           reg_write;    // 1 -> write back to register file
-t_wb_src        wb_data_src;  // Enum defined in common_pkg (ALU, Mem Read, or PC+4 get written to rd)
-logic           is_branch;    // 1 -> branch, 0 -> not a branch
-t_branches      branch_type;  // Type of comparison (BEQ, BNE, etc. Types defined in common_pkg)
-logic           is_jump;      // 1 -> jump/redirect, 0 -> not a jump
-logic           is_jalr;      // 1 -> when instruction is JALR, 0 -> o.w.
-logic           illegal;      // 1 -> not a RV32I instruction, 0 -> o.w.
-logic           use_rs1; 
-logic           use_rs2;
+    logic           valid;
+    logic [31:0]    pc;
+    logic [31:0]    imm;
+    t_alu_ops       alu_op;
+    logic           alu_inp_1;
+    logic           alu_inp_2;
+    logic           mem_read;
+    logic           mem_write;
+    t_mem_types     mem_type;
+    logic           reg_write;
+    t_wb_src        wb_data_src;
+    logic           is_branch;
+    t_branches      branch_type;
+    logic           is_jump;
+    logic           is_jalr;
+    logic           illegal;
+    logic           use_rs1;
+    logic           use_rs2;
 
-logic [6:0] opcode;
-logic [4:0] rd;
-logic [2:0] funct3;
-logic [4:0] rs1;
-logic [4:0] rs2;
-logic [6:0] funct7;
+    logic [6:0] opcode;
+    logic [4:0] rd;
+    logic [2:0] funct3;
+    logic [4:0] rs1;
+    logic [4:0] rs2;
+    logic [6:0] funct7;
 
-logic [31:0] imm_i;
-logic [31:0] imm_s;
-logic [31:0] imm_b;
-logic [31:0] imm_u;
-logic [31:0] imm_j;
+    logic [31:0] imm_i;
+    logic [31:0] imm_s;
+    logic [31:0] imm_b;
+    logic [31:0] imm_u;
+    logic [31:0] imm_j;
 
-// Extract all the relevant information from the instruction
-assign opcode  = i_instr[6:0];
-assign rd      = i_instr[11:7];
-assign funct3  = i_instr[14:12];
-assign rs1     = i_instr[19:15];
-assign rs2     = i_instr[24:20];
-assign funct7  = i_instr[31:25];
+    assign opcode = i_instr[6:0];
+    assign rd     = i_instr[11:7];
+    assign funct3 = i_instr[14:12];
+    assign rs1    = i_instr[19:15];
+    assign rs2    = i_instr[24:20];
+    assign funct7 = i_instr[31:25];
 
-// Decode the immediate
-assign imm_i  = {{20{i_instr[31]}}, i_instr[31:20]};
-assign imm_s  = {{20{i_instr[31]}}, i_instr[31:25], i_instr[11:7]};
-assign imm_b  = {{19{i_instr[31]}}, i_instr[31], i_instr[7], i_instr[30:25], i_instr[11:8], 1'b0};
-assign imm_u  = {i_instr[31:12], 12'b0};
-assign imm_j  = {{12{i_instr[31]}}, i_instr[19:12], i_instr[20], i_instr[30:21], 1'b0};
+    assign imm_i = {{20{i_instr[31]}}, i_instr[31:20]};
+    assign imm_s = {{20{i_instr[31]}}, i_instr[31:25], i_instr[11:7]};
+    assign imm_b = {{19{i_instr[31]}}, i_instr[31], i_instr[7], i_instr[30:25], i_instr[11:8], 1'b0};
+    assign imm_u = {i_instr[31:12], 12'b0};
+    assign imm_j = {{12{i_instr[31]}}, i_instr[19:12], i_instr[20], i_instr[30:21], 1'b0};
 
-always_comb begin
-    // Default values (NOP: addi x0, x0, 0)
-    valid       = 1'b0;
-    pc          = i_pc;
-    imm         = 32'b0;
-    alu_op      = ARITH_ADD;
-    alu_inp_1   = 1'b0;
-    alu_inp_2   = 1'b1;
-    mem_read    = 1'b0;
-    mem_write   = 1'b0;
-    mem_type    = t_mem_types'('x);
-    reg_write   = 1'b0;
-    wb_data_src = t_wb_src'('x);
-    is_branch   = 1'b0;
-    branch_type = t_branches'('x);
-    is_jump     = 1'b0;
-    is_jalr     = 1'b0;
-    illegal     = 1'b0;
-    use_rs1     = 1'b1;
-    use_rs2     = 1'b1;
-    if (i_valid) begin
-        valid   = 1'b1;
-        case(opcode)
-            OP_AUIPC: begin
-                imm         = imm_u;
-                alu_inp_1   = 1'b1;
-                reg_write   = 1'b1;
-                use_rs1     = 1'b0;
-                use_rs2     = 1'b0;
-                wb_data_src = WR_ALU_RES;
-            end
+    always_comb begin
+        valid       = 1'b0;
+        pc          = i_pc;
+        imm         = 32'b0;
+        alu_op      = ARITH_ADD;
+        alu_inp_1   = 1'b0;
+        alu_inp_2   = 1'b1;
+        mem_read    = 1'b0;
+        mem_write   = 1'b0;
+        mem_type    = S_LOAD_BYTE;
+        reg_write   = 1'b0;
+        wb_data_src = WR_ALU_RES;
+        is_branch   = 1'b0;
+        branch_type = BEQ;
+        is_jump     = 1'b0;
+        is_jalr     = 1'b0;
+        illegal     = 1'b0;
+        use_rs1     = 1'b1;
+        use_rs2     = 1'b1;
 
-            OP_JALR: begin
-                if (funct3 == 3'b000) begin
-                    imm         = imm_i;
+        if (i_valid) begin
+            valid = 1'b1;
+
+            case (opcode)
+                OP_AUIPC: begin
+                    imm         = imm_u;
+                    alu_inp_1   = 1'b1;
+                    reg_write   = 1'b1;
+                    use_rs1     = 1'b0;
+                    use_rs2     = 1'b0;
+                    wb_data_src = WR_ALU_RES;
+                end
+
+                OP_JALR: begin
+                    if (funct3 == 3'b000) begin
+                        imm         = imm_i;
+                        reg_write   = 1'b1;
+                        wb_data_src = WR_PC_PLUS_4;
+                        is_jump     = 1'b1;
+                        is_jalr     = 1'b1;
+                        use_rs1     = 1'b1;
+                        use_rs2     = 1'b0;
+                    end else begin
+                        illegal = 1'b1;
+                    end
+                end
+
+                OP_JAL: begin
+                    imm         = imm_j;
+                    alu_inp_1   = 1'b1;
                     reg_write   = 1'b1;
                     wb_data_src = WR_PC_PLUS_4;
                     is_jump     = 1'b1;
-                    is_jalr     = 1'b1;
+                    use_rs1     = 1'b0;
+                    use_rs2     = 1'b0;
+                end
+
+                OP_BRANCH: begin
+                    imm       = imm_b;
+                    alu_inp_1 = 1'b1;
+                    is_branch = 1'b1;
+
+                    case (funct3)
+                        F3_BEQ:  branch_type = BEQ;
+                        F3_BNE:  branch_type = BNE;
+                        F3_BLT:  branch_type = BLT;
+                        F3_BGE:  branch_type = BGE;
+                        F3_BLTU: branch_type = BLTU;
+                        F3_BGEU: branch_type = BGEU;
+                        default: illegal = 1'b1;
+                    endcase
+                end
+
+                OP_LUI: begin
+                    imm         = imm_u;
+                    alu_inp_1   = 1'b0;
+                    alu_inp_2   = 1'b1;
+                    reg_write   = 1'b1;
+                    wb_data_src = WR_ALU_RES;
+                    use_rs1     = 1'b0;
+                    use_rs2     = 1'b0;
+                end
+
+                OP_STORE: begin
+                    imm       = imm_s;
+                    mem_write = 1'b1;
+
+                    case (funct3)
+                        F3_SB:  mem_type = STORE_BYTE;
+                        F3_SH:  mem_type = STORE_HALF;
+                        F3_SW:  mem_type = STORE_WORD;
+                        default: illegal = 1'b1;
+                    endcase
+                end
+
+                OP_LOAD: begin
+                    imm         = imm_i;
+                    mem_read    = 1'b1;
+                    reg_write   = 1'b1;
+                    wb_data_src = WR_READ_RES;
                     use_rs1     = 1'b1;
                     use_rs2     = 1'b0;
-                end else
-                    illegal     = 1'b1;
+
+                    case (funct3)
+                        F3_LB:  mem_type = S_LOAD_BYTE;
+                        F3_LH:  mem_type = S_LOAD_HALF;
+                        F3_LW:  mem_type = S_LOAD_WORD;
+                        F3_LBU: mem_type = U_LOAD_BYTE;
+                        F3_LHU: mem_type = U_LOAD_HALF;
+                        default: illegal = 1'b1;
+                    endcase
+                end
+
+                OP_ALU: begin
+                    alu_inp_2   = 1'b0;
+                    reg_write   = 1'b1;
+                    wb_data_src = WR_ALU_RES;
+
+                    case (funct3)
+                        F3_ADD: begin
+                            case (funct7)
+                                7'b0000000: alu_op = ARITH_ADD;
+                                7'b0100000: alu_op = ARITH_SUB;
+                                default: illegal = 1'b1;
+                            endcase
+                        end
+
+                        F3_SR: begin
+                            case (funct7)
+                                7'b0000000: alu_op = SHIFT_R_LOGIC;
+                                7'b0100000: alu_op = SHIFT_R_ARITH;
+                                default: illegal = 1'b1;
+                            endcase
+                        end
+
+                        F3_SLL: begin
+                            case (funct7)
+                                7'b0000000: alu_op = SHIFT_L_LOGIC;
+                                default: illegal = 1'b1;
+                            endcase
+                        end
+
+                        F3_SLT: begin
+                            case (funct7)
+                                7'b0000000: alu_op = SET_LESS_S;
+                                default: illegal = 1'b1;
+                            endcase
+                        end
+
+                        F3_SLTU: begin
+                            case (funct7)
+                                7'b0000000: alu_op = SET_LESS_U;
+                                default: illegal = 1'b1;
+                            endcase
+                        end
+
+                        F3_XOR: begin
+                            case (funct7)
+                                7'b0000000: alu_op = LOGIC_XOR;
+                                default: illegal = 1'b1;
+                            endcase
+                        end
+
+                        F3_OR: begin
+                            case (funct7)
+                                7'b0000000: alu_op = LOGIC_OR;
+                                default: illegal = 1'b1;
+                            endcase
+                        end
+
+                        F3_AND: begin
+                            case (funct7)
+                                7'b0000000: alu_op = LOGIC_AND;
+                                default: illegal = 1'b1;
+                            endcase
+                        end
+
+                        default: illegal = 1'b1;
+                    endcase
+                end
+
+                OP_IMM: begin
+                    imm         = imm_i;
+                    reg_write   = 1'b1;
+                    wb_data_src = WR_ALU_RES;
+                    use_rs1     = 1'b1;
+                    use_rs2     = 1'b0;
+
+                    case (funct3)
+                        F3_ADD:  alu_op = ARITH_ADD;
+                        F3_SLT:  alu_op = SET_LESS_S;
+                        F3_SLTU: alu_op = SET_LESS_U;
+                        F3_XOR:  alu_op = LOGIC_XOR;
+                        F3_OR:   alu_op = LOGIC_OR;
+                        F3_AND:  alu_op = LOGIC_AND;
+
+                        F3_SLL: begin
+                            imm = {27'b0, i_instr[24:20]};
+                            case (funct7)
+                                7'b0000000: alu_op = SHIFT_L_LOGIC;
+                                default: illegal = 1'b1;
+                            endcase
+                        end
+
+                        F3_SR: begin
+                            imm = {27'b0, i_instr[24:20]};
+                            case (funct7)
+                                7'b0000000: alu_op = SHIFT_R_LOGIC;
+                                7'b0100000: alu_op = SHIFT_R_ARITH;
+                                default: illegal = 1'b1;
+                            endcase
+                        end
+
+                        default: illegal = 1'b1;
+                    endcase
+                end
+
+                OP_SYS: begin
+                    illegal = 1'b1;
+                end
+
+                default: begin
+                    illegal = 1'b1;
+                end
+            endcase
+
+            if (illegal) begin
+                reg_write = 1'b0;
+                mem_read  = 1'b0;
+                mem_write = 1'b0;
+                is_branch = 1'b0;
+                is_jump   = 1'b0;
+                is_jalr   = 1'b0;
             end
-
-            OP_JAL: begin
-                // set ALU to calculate the target address: PC + imm_j
-                imm             = imm_j;
-                alu_inp_1       = 1'b1;
-                reg_write       = 1'b1;
-                wb_data_src     = WR_PC_PLUS_4;
-                is_jump         = 1'b1;
-                use_rs1         = 1'b0;
-                use_rs2         = 1'b0;
-            end
-
-            OP_BRANCH: begin
-                // set ALU to calculate the target address: PC + imm_b
-                imm             = imm_b;
-                alu_inp_1       = 1'b1;
-                is_branch       = 1'b1;
-                
-                case(funct3)
-                    F3_BEQ:     branch_type     = BEQ;
-                    F3_BNE:     branch_type     = BNE;
-                    F3_BLT:     branch_type     = BLT;
-                    F3_BGE:     branch_type     = BGE;
-                    F3_BLTU:    branch_type     = BLTU;
-                    F3_BGEU:    branch_type     = BGEU;
-                    default:    illegal         = 1'b1;
-                endcase
-            end
-
-            OP_LUI: begin
-                imm         = imm_u;
-                alu_inp_1   = 1'b0;
-                alu_inp_2   = 1'b1;
-                reg_write   = 1'b1;
-                wb_data_src = WR_ALU_RES;
-                use_rs1     = 1'b0;
-                use_rs2     = 1'b0;
-            end
-
-            OP_STORE: begin
-                imm             = imm_s;
-                mem_write       = 1'b1;
-
-                case (funct3)
-                    F3_SB:      mem_type    = STORE_BYTE;
-                    F3_SH:      mem_type    = STORE_HALF;
-                    F3_SW:      mem_type    = STORE_WORD;
-                    default:    illegal     = 1'b1;
-                endcase 
-            end
-        
-            OP_LOAD: begin
-                imm             = imm_i;
-                mem_read        = 1'b1;
-                reg_write       = 1'b1;
-                wb_data_src     = WR_READ_RES;
-                use_rs1         = 1'b1;
-                use_rs2         = 1'b0;
-                
-                case (funct3)
-                    F3_LB:      mem_type    = S_LOAD_BYTE;
-                    F3_LH:      mem_type    = S_LOAD_HALF;
-                    F3_LW:      mem_type    = S_LOAD_WORD;
-                    F3_LBU:     mem_type    = U_LOAD_BYTE;
-                    F3_LHU:     mem_type    = U_LOAD_HALF;
-                    default:    illegal     = 1'b1;
-                endcase 
-            end
-
-            OP_ALU: begin
-                alu_inp_2   = 1'b0;
-                reg_write   = 1'b1;
-                wb_data_src =  WR_ALU_RES;
-                
-                case (funct3)
-                    F3_ADD: begin
-                        case (funct7)
-                            7'b0000000: alu_op      = ARITH_ADD;
-                            7'b0100000: alu_op      = ARITH_SUB;
-                            default:    illegal     = 1'b1;
-                        endcase 
-                    end
-
-                    F3_SR: begin
-                        case (funct7)
-                            7'b0000000: alu_op  = SHIFT_R_LOGIC;
-                            7'b0100000: alu_op  = SHIFT_R_ARITH;
-                            default:    illegal = 1'b1;
-                        endcase 
-                    end
-
-                    F3_SLL: begin
-                        case (funct7)
-                            7'b0000000: alu_op  = SHIFT_L_LOGIC;
-                            default:    illegal = 1'b1;
-                        endcase
-                    end
-
-                    F3_SLT: begin
-                        case (funct7)
-                            7'b0000000: alu_op = SET_LESS_S;
-                            default:    illegal = 1'b1;
-                        endcase 
-                    end
-
-                    F3_SLTU: begin
-                        case (funct7)
-                            7'b0000000: alu_op = SET_LESS_U;
-                            default:    illegal = 1'b1;
-                        endcase 
-                    end
-
-                    F3_XOR: begin
-                        case (funct7)
-                            7'b0000000: alu_op = LOGIC_XOR;
-                            default:    illegal = 1'b1;
-                        endcase 
-                    end
-
-                    F3_OR: begin
-                        case (funct7)
-                            7'b0000000: alu_op = LOGIC_OR;
-                            default:    illegal = 1'b1;
-                        endcase 
-                    end
-
-                    F3_AND: begin
-                        case (funct7)
-                            7'b0000000: alu_op = LOGIC_AND;
-                            default:    illegal = 1'b1;
-                        endcase 
-                    end
-
-                    default:            illegal = 1'b1;
-                endcase 
-            end
-        
-            OP_IMM: begin
-                imm         = imm_i;
-                reg_write   = 1'b1;
-                wb_data_src = WR_ALU_RES;
-                use_rs1     = 1'b1;
-                use_rs2     = 1'b0;
-                
-                case (funct3) 
-                    F3_ADD:        alu_op = ARITH_ADD;
-                    F3_SLT:        alu_op = SET_LESS_S;
-                    F3_SLTU:       alu_op = SET_LESS_U;
-                    F3_XOR:        alu_op = LOGIC_XOR;
-                    F3_OR:         alu_op = LOGIC_OR;
-                    F3_AND:        alu_op = LOGIC_AND;
-                    F3_SLL: begin
-                        imm = {27'b0, i_instr[24:20]};
-                        case (funct7)
-                            7'b0000000:     alu_op  = SHIFT_L_LOGIC;
-                            default:        illegal = 1'b1;
-                        endcase
-                    end
-                    F3_SR: begin
-                        imm = {27'b0, i_instr[24:20]};
-                        case (funct7)
-                            7'b0000000:     alu_op  = SHIFT_R_LOGIC;
-                            7'b0100000:     alu_op  = SHIFT_R_ARITH;
-                            default:        illegal = 1'b1; 
-                        endcase
-                    end
-                    default:        illegal = 1'b1;
-                endcase
-            end 
-
-            OP_SYS: illegal = 1'b1;
-            default: illegal = 1'b1;
-        endcase
-
-        // Illegal instructions must have no side effects
-        if (illegal) begin
-            reg_write   = 1'b0;
-            mem_read    = 1'b0;
-            mem_write   = 1'b0;
-            is_branch   = 1'b0;
-            is_jump     = 1'b0;
-            is_jalr     = 1'b0;
         end
     end
-end
 
-always_ff @(posedge i_clk) begin 
-    if (i_rst == 1'b1) begin 
-        o_valid         <= 1'b0;
-        o_pc            <= 32'd0;
-        o_rs1           <= 5'd0;
-        o_rs2           <= 5'd0;
-        o_rd            <= 5'd0;
-        o_imm           <= 32'd0;
-        o_alu_op        <= ARITH_ADD;     
-        o_alu_inp_1     <= 1'b0;
-        o_alu_inp_2     <= 1'b1;          
-        o_mem_read      <= 1'b0;
-        o_mem_write     <= 1'b0;
-        o_mem_type      <= S_LOAD_BYTE;   
-        o_reg_write     <= 1'b0;
-        o_wr_from       <= WR_ALU_RES;     
-        o_is_branch     <= 1'b0;
-        o_branch_type   <= BEQ;
-        o_is_jump       <= 1'b0;
-        o_jalr          <= 1'b0;
-        o_illegal       <= 1'b0;
-        o_pc_plus_4     <= 32'd0;
-    end else if (i_flush == 1'b1) begin
-        // Inject NOP
-        o_valid         <= 1'b0;
-        o_mem_write     <= 1'b0;
-        o_mem_read      <= 1'b0;
-        o_reg_write     <= 1'b0;
-        o_is_branch     <= 1'b0;
-        o_is_jump       <= 1'b0;
-        o_illegal       <= 1'b0;
-        o_jalr          <= 1'b0;
-    end else if (i_stall == 1'b0) begin
-        o_valid         <= valid;
-        o_pc            <= pc;
-        o_rs1           <= use_rs1 ? rs1 : 5'd0;
-        o_rs2           <= use_rs2 ? rs2 : 5'd0;
-        o_rd            <= rd;
-        o_imm           <= imm;
-        o_alu_op        <= alu_op;
-        o_alu_inp_1     <= alu_inp_1;
-        o_alu_inp_2     <= alu_inp_2;
-        o_mem_read      <= mem_read;
-        o_mem_write     <= mem_write;
-        o_mem_type      <= mem_type;
-        o_reg_write     <= reg_write && (rd != 5'd0);
-        o_wr_from       <= wb_data_src;        
-        o_is_branch     <= is_branch;
-        o_branch_type   <= branch_type;
-        o_is_jump       <= is_jump;
-        o_jalr          <= is_jalr;
-        o_illegal       <= illegal;
-        o_pc_plus_4     <= pc + 32'd4;
+    always_ff @(posedge i_clk) begin
+        if (i_rst) begin
+            o_valid       <= 1'b0;
+            o_pc          <= 32'b0;
+            o_rs1         <= 5'b0;
+            o_rs2         <= 5'b0;
+            o_rd          <= 5'b0;
+            o_imm         <= 32'b0;
+            o_alu_op      <= ARITH_ADD;
+            o_alu_inp_1   <= 1'b0;
+            o_alu_inp_2   <= 1'b1;
+            o_mem_read    <= 1'b0;
+            o_mem_write   <= 1'b0;
+            o_mem_type    <= S_LOAD_BYTE;
+            o_reg_write   <= 1'b0;
+            o_wr_from     <= WR_ALU_RES;
+            o_is_branch   <= 1'b0;
+            o_branch_type <= BEQ;
+            o_is_jump     <= 1'b0;
+            o_jalr        <= 1'b0;
+            o_illegal     <= 1'b0;
+            o_pc_plus_4   <= 32'b0;
+            o_pred_taken  <= 1'b0;
+            o_pred_target <= 32'b0;
+        end else if (i_flush) begin
+            o_valid       <= 1'b0;
+            o_pc          <= 32'b0;
+            o_rs1         <= 5'b0;
+            o_rs2         <= 5'b0;
+            o_rd          <= 5'b0;
+            o_imm         <= 32'b0;
+            o_alu_op      <= ARITH_ADD;
+            o_alu_inp_1   <= 1'b0;
+            o_alu_inp_2   <= 1'b1;
+            o_mem_read    <= 1'b0;
+            o_mem_write   <= 1'b0;
+            o_mem_type    <= S_LOAD_BYTE;
+            o_reg_write   <= 1'b0;
+            o_wr_from     <= WR_ALU_RES;
+            o_is_branch   <= 1'b0;
+            o_branch_type <= BEQ;
+            o_is_jump     <= 1'b0;
+            o_jalr        <= 1'b0;
+            o_illegal     <= 1'b0;
+            o_pc_plus_4   <= 32'b0;
+            o_pred_taken  <= 1'b0;
+            o_pred_target <= 32'b0;
+        end else if (!i_stall) begin
+            o_valid       <= valid;
+            o_pc          <= pc;
+            o_rs1         <= use_rs1 ? rs1 : 5'd0;
+            o_rs2         <= use_rs2 ? rs2 : 5'd0;
+            o_rd          <= rd;
+            o_imm         <= imm;
+            o_alu_op      <= alu_op;
+            o_alu_inp_1   <= alu_inp_1;
+            o_alu_inp_2   <= alu_inp_2;
+            o_mem_read    <= mem_read;
+            o_mem_write   <= mem_write;
+            o_mem_type    <= mem_type;
+            o_reg_write   <= reg_write && (rd != 5'd0);
+            o_wr_from     <= wb_data_src;
+            o_is_branch   <= is_branch;
+            o_branch_type <= branch_type;
+            o_is_jump     <= is_jump;
+            o_jalr        <= is_jalr;
+            o_illegal     <= illegal;
+            o_pc_plus_4   <= pc + 32'd4;
+            o_pred_taken  <= i_pred_taken;
+            o_pred_target <= i_pred_target;
+        end
     end
-end 
+
 endmodule
 
 === FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\execute.sv ===
@@ -838,176 +964,141 @@ end
 endmodule
 
 === FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\fetch.sv ===
-// ============================================================================
-// File Name   : fetch.sv
-// Author      : Kevin Toledo Fernandez / GitHub: systemkev
-// Date        : 2026-06-16
-// Project     : RISC-V 32-bit Processor
-// Description : Instruction Fetch (IF) stage of the pipelined RISC-V RV32I 
-//               processor. Maintains the Program Counter (PC) and interfaces 
-//               with Instruction Memory to retrieve 32-bit instructions. 
-//               Computes sequential execution (PC + 4) while handling asynchronous 
-//               PC redirection from the Execute stage for branches and jumps. 
-//               Contains sequential pipeline registers to forward the PC and 
-//               fetched instruction to the Decode stage, supporting pipeline 
-//               stalls and flushes.
-//
-// License     : MIT
-// ============================================================================
-
 import common_pkg::*;
 
 module fetch (
-    input  logic            i_clk,          // Global system clock from FPGA 
-    input  logic            i_rst,          // Power-on reset or physical button reset
-    input  logic            i_stall,        // 1 -> pipeline must stall, 0 -> normal operation 
-    input  logic            i_redirect,     // 1 -> EXE stage determined we redirected, 0 -> normal operation 
-    input  logic [31:0]     i_target,       // Jump destination address
-    input  logic [31:0]     i_imem_data,    // Instruction fetched from iMem
+    input  logic        i_clk,
+    input  logic        i_rst,
+    input  logic        i_stall,
+    input  logic        i_redirect,
+    input  logic [31:0] i_target,
+    input  logic        i_pred_taken,
+    input  logic [31:0] i_pred_target,
+    input  logic [31:0] i_imem_data,
 
-    output logic [31:0]     o_imem_addr,    // iMem address to fetch from         
-    output logic            o_valid,        // 1 -> instruction ready to be decoded, 0 -> normal operation
-    output logic [31:0]     o_pc,           // Current instruction address 
-    output logic [31:0]     o_instr         // Instruction to pass onto DEC stage 
+    output logic [31:0] o_imem_addr,
+    output logic        o_valid,
+    output logic [31:0] o_pc,
+    output logic [31:0] o_instr,
+    output logic        o_pred_taken,
+    output logic [31:0] o_pred_target
 );
 
-logic [31:0]    pc_cur;     // Current PC
-logic [31:0]    pc_dly;     // Delayed PC (aligns with 1 cycle BRAM delay)
-logic           valid;       
+    logic [31:0] pc_cur;
+    logic [31:0] pc_dly;
+    logic        valid;
+    logic [31:0] hold_instr;
+    logic        is_held;
+    logic        pred_taken_dly;
+    logic [31:0] pred_target_dly;
 
-// Skid buffer to hold instruction during a stall
-logic [31:0]    hold_instr;   
-logic           is_held;
-
-always_ff @(posedge i_clk) begin
-    if (i_rst == 1'b1) begin
-        pc_cur          <= RESET_VECTOR;
-        pc_dly          <= RESET_VECTOR;
-        valid           <= 1'b0;
-        hold_instr      <= RESET_VECTOR;
-        is_held         <= 1'b0;
-    end else if (i_redirect == 1'b1) begin 
-        pc_cur          <= i_target;
-        valid           <= 1'b0;
-        is_held         <= 1'b0; 
-    end else if (i_stall == 1'b1) begin 
-        if (is_held == 1'b0) begin
-            hold_instr  <= i_imem_data;
-            is_held     <= 1'b1;
+    always_ff @(posedge i_clk) begin
+        if (i_rst) begin
+            pc_cur          <= RESET_VECTOR;
+            pc_dly          <= RESET_VECTOR;
+            valid           <= 1'b0;
+            hold_instr      <= 32'b0;
+            is_held         <= 1'b0;
+            pred_taken_dly  <= 1'b0;
+            pred_target_dly <= 32'b0;
+        end else if (i_redirect) begin
+            pc_cur          <= i_target;
+            valid           <= 1'b0;
+            is_held         <= 1'b0;
+            pred_taken_dly  <= 1'b0;
+            pred_target_dly <= 32'b0;
+        end else if (i_stall) begin
+            if (!is_held) begin
+                hold_instr <= i_imem_data;
+                is_held    <= 1'b1;
+            end
+        end else begin
+            pc_cur          <= i_pred_taken ? i_pred_target : pc_cur + 32'd4;
+            pc_dly          <= pc_cur;
+            valid           <= 1'b1;
+            is_held         <= 1'b0;
+            pred_taken_dly  <= i_pred_taken;
+            pred_target_dly <= i_pred_target;
         end
-    end else begin
-        pc_cur          <= pc_cur + 32'd4;
-        pc_dly          <= pc_cur;
-        valid           <= 1'b1;
-        is_held         <= 1'b0;
     end
-end
 
-assign o_imem_addr  = pc_cur;
-assign o_pc         = pc_dly;
-assign o_valid      = valid && !i_redirect;
-assign o_instr      = (is_held == 1'b1)? hold_instr : i_imem_data;
+    assign o_imem_addr   = pc_cur;
+    assign o_pc          = pc_dly;
+    assign o_valid       = valid && !i_redirect;
+    assign o_instr       = is_held ? hold_instr : i_imem_data;
+    assign o_pred_taken  = pred_taken_dly;
+    assign o_pred_target = pred_target_dly;
 
 endmodule
 
 === FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\hazard_unit.sv ===
-// ============================================================================
-// File Name   : hazard_unit.sv
-// Author      : Kevin Toledo Fernandez / GitHub: systemkev
-// Date        : 2026-07-04
-// Project     : RISC-V 32-bit Processor
-// Description : 
-//
-// License     : MIT
-// ============================================================================
-
 import common_pkg::*;
 
 module hazard_unit (
-    // Inputs from decode stage
     input   logic [4:0]     i_id_rs1,
     input   logic [4:0]     i_id_rs2,
-
-    // Inputs from execute stage
     input   logic [4:0]     i_ex_rs1,
     input   logic [4:0]     i_ex_rs2,
     input   logic [4:0]     i_ex_rd,
     input   logic           i_ex_mem_read,
-    input   logic           i_ex_redirect, 
-
-    // Inputs from memory stage
+    input   logic           i_ex_mispredict,
     input   logic [4:0]     i_mem_rd,
     input   logic           i_mem_reg_wr,
-
-    // Inputs from writeback stage
     input   logic [4:0]     i_wb_rd,
-    input   logic           i_wb_reg_wr, 
-
-    // Outputs to execute stage
+    input   logic           i_wb_reg_wr,
+    input   logic           i_cache_stall,
     output  t_forwarding    o_forward_op_a,
     output  t_forwarding    o_forward_op_b,
-
-    // Stall and flush signals
     output  logic           o_fetch_stall,
     output  logic           o_decode_stall,
+    output  logic           o_execute_stall,
+    output  logic           o_memory_stall,
     output  logic           o_decode_flush,
     output  logic           o_execute_flush
 );
 
     logic load_use_hazard;
 
-    //////////////////////
-    // Forwarding Logic //
-    //////////////////////
     always_comb begin
         o_forward_op_a = NO_HAZ;
         o_forward_op_b = NO_HAZ;
 
-        // Forward rs1 logic
-        if (i_mem_reg_wr == 1'b1 && i_mem_rd != 5'b0 && i_mem_rd == i_ex_rs1)
+        if (i_mem_reg_wr && i_mem_rd != 5'd0 && i_mem_rd == i_ex_rs1)
             o_forward_op_a = MEM_FWD;
-        else if (i_wb_reg_wr == 1'b1 && i_wb_rd != 5'b0 && i_wb_rd == i_ex_rs1)
+        else if (i_wb_reg_wr && i_wb_rd != 5'd0 && i_wb_rd == i_ex_rs1)
             o_forward_op_a = WB_FWD;
 
-        // Forward rs2 logic
-        if (i_mem_reg_wr == 1'b1 && i_mem_rd != 5'b0 && i_mem_rd == i_ex_rs2) 
-            o_forward_op_b = MEM_FWD; 
-        else if (i_wb_reg_wr == 1'b1 && i_wb_rd != 5'b0 && i_wb_rd == i_ex_rs2) 
+        if (i_mem_reg_wr && i_mem_rd != 5'd0 && i_mem_rd == i_ex_rs2)
+            o_forward_op_b = MEM_FWD;
+        else if (i_wb_reg_wr && i_wb_rd != 5'd0 && i_wb_rd == i_ex_rs2)
             o_forward_op_b = WB_FWD;
     end
 
-    ///////////////////////////
-    // Load Use Hazard Logic //
-    ///////////////////////////
-    always_comb begin 
-        load_use_hazard = 1'b0;
+    assign load_use_hazard =
+        i_ex_mem_read &&
+        i_ex_rd != 5'd0 &&
+        (i_ex_rd == i_id_rs1 || i_ex_rd == i_id_rs2);
 
-        if (i_ex_mem_read == 1'b1 && i_ex_rd != 5'b0 && 
-            (i_ex_rd == i_id_rs1 || i_ex_rd == i_id_rs2)) begin
-            load_use_hazard = 1'b1;
-        end
-    end 
+    assign o_fetch_stall =
+        i_cache_stall ||
+        (load_use_hazard && !i_ex_mispredict);
 
-    //////////////////////
-    // Pipeline Control //
-    //////////////////////
-    always_comb begin
-        o_fetch_stall       = 1'b0;
-        o_decode_stall      = 1'b0;
-        o_decode_flush      = 1'b0;
-        o_execute_flush     = 1'b0;
+    assign o_decode_stall =
+        i_cache_stall ||
+        (load_use_hazard && !i_ex_mispredict);
 
-        if (i_ex_redirect == 1'b1) begin
-            // Branch or Jump resolved.
-            // Kill the instruction currently in the Decode stage. 
-            // (Fetch handles its own kill via vld_delay).
-            o_decode_flush  = 1'b1;
-        end else if (load_use_hazard) begin
-            o_fetch_stall   = 1'b1;
-            o_decode_stall  = 1'b1;
-            o_execute_flush = 1'b1;
-        end 
-    end 
+    assign o_execute_stall = i_cache_stall;
+    assign o_memory_stall  = i_cache_stall;
+
+    assign o_decode_flush =
+        !i_cache_stall &&
+        i_ex_mispredict;
+
+    assign o_execute_flush =
+        !i_cache_stall &&
+        !i_ex_mispredict &&
+        load_use_hazard;
+
 endmodule
 
 === FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\instruction_mem.sv ===
@@ -1051,27 +1142,410 @@ module instruction_memory #(
 
 endmodule
 
-=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\memory.sv ===
-// ============================================================================
-// File Name   : memory.sv
-// Author      : Kevin Toledo Fernandez / GitHub: systemkev
-// Date        : 2026-06-16
-// Project     : RISC-V 32-bit Processor
-// Description : Memory (MEM) stage of the pipelined RISC-V RV32I processor.
-// ============================================================================
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\l1_dcache.sv ===
+module l1_dcache #(
+    parameter int LINES          = 64,
+    parameter int WORDS_PER_LINE = 4
+)(
+    input  logic        i_clk,
+    input  logic        i_rst,
 
+    input  logic        i_cpu_valid,
+    input  logic        i_cpu_write,
+    input  logic        i_cpu_uncached,
+    input  logic [31:0] i_cpu_addr,
+    input  logic [31:0] i_cpu_wr_data,
+    input  logic [3:0]  i_cpu_byte_en,
+
+    output logic [31:0] o_cpu_rd_data,
+    output logic        o_cpu_ready,
+    output logic        o_cpu_stall,
+
+    output logic        o_mem_valid,
+    output logic        o_mem_write,
+    output logic [31:0] o_mem_addr,
+    output logic [31:0] o_mem_wr_data,
+    output logic [3:0]  o_mem_byte_en,
+
+    input  logic        i_mem_ready,
+    input  logic [31:0] i_mem_rd_data
+);
+
+    localparam int INDEX_BITS     = $clog2(LINES);
+    localparam int WORD_BITS      = $clog2(WORDS_PER_LINE);
+    localparam int TAG_BITS       = 32 - INDEX_BITS - WORD_BITS - 2;
+    localparam int DATA_ADDR_BITS = INDEX_BITS + WORD_BITS;
+    localparam int DATA_WORDS     = LINES * WORDS_PER_LINE;
+
+    typedef enum logic [3:0] {
+        S_IDLE,
+        S_LOOKUP,
+        S_WRITEBACK_READ,
+        S_WRITEBACK_SEND,
+        S_REFILL,
+        S_MISS_READ,
+        S_MISS_WRITE,
+        S_RESPONSE,
+        S_UNCACHED
+    } t_cache_state;
+
+    t_cache_state state;
+
+    (* ram_style = "block" *)
+    logic [31:0] data_array [0:DATA_WORDS-1];
+
+    (* ram_style = "distributed" *)
+    logic [TAG_BITS-1:0] tag_array [0:LINES-1];
+
+    logic [LINES-1:0] valid_array;
+    logic [LINES-1:0] dirty_array;
+
+    logic [31:0] req_addr;
+    logic        req_write;
+    logic        req_uncached;
+    logic [31:0] req_wr_data;
+    logic [3:0]  req_byte_en;
+
+    logic [INDEX_BITS-1:0] req_index;
+    logic [WORD_BITS-1:0]  req_word;
+    logic [TAG_BITS-1:0]   req_tag;
+
+    logic [TAG_BITS-1:0] victim_tag;
+    logic [WORD_BITS-1:0] word_count;
+
+    logic req_hit;
+
+    logic [DATA_ADDR_BITS-1:0] data_addr;
+    logic [31:0]               data_wr_data;
+    logic [3:0]                data_wr_en;
+    logic                      data_rd_en;
+    logic [31:0]               data_rd_data;
+
+    logic [31:0] uncached_rd_data;
+
+    assign req_hit =
+        valid_array[req_index] &&
+        (tag_array[req_index] == req_tag);
+
+    always_comb begin
+        data_addr    = {req_index, req_word};
+        data_wr_data = 32'b0;
+        data_wr_en   = 4'b0000;
+        data_rd_en   = 1'b0;
+
+        case (state)
+
+            S_LOOKUP: begin
+                if (req_hit) begin
+                    if (req_write) begin
+                        data_addr    = {req_index, req_word};
+                        data_wr_data = req_wr_data;
+                        data_wr_en   = req_byte_en;
+                    end else begin
+                        data_addr  = {req_index, req_word};
+                        data_rd_en = 1'b1;
+                    end
+                end
+            end
+
+            S_WRITEBACK_READ: begin
+                data_addr  = {req_index, word_count};
+                data_rd_en = 1'b1;
+            end
+
+            S_REFILL: begin
+                if (i_mem_ready) begin
+                    data_addr    = {req_index, word_count};
+                    data_wr_data = i_mem_rd_data;
+                    data_wr_en   = 4'b1111;
+                end
+            end
+
+            S_MISS_READ: begin
+                data_addr  = {req_index, req_word};
+                data_rd_en = 1'b1;
+            end
+
+            S_MISS_WRITE: begin
+                data_addr    = {req_index, req_word};
+                data_wr_data = req_wr_data;
+                data_wr_en   = req_byte_en;
+            end
+
+            default: begin
+                data_addr    = {req_index, req_word};
+                data_wr_data = 32'b0;
+                data_wr_en   = 4'b0000;
+                data_rd_en   = 1'b0;
+            end
+
+        endcase
+    end
+
+    always_ff @(posedge i_clk) begin
+        if (data_wr_en[0])
+            data_array[data_addr][7:0]
+                <= data_wr_data[7:0];
+
+        if (data_wr_en[1])
+            data_array[data_addr][15:8]
+                <= data_wr_data[15:8];
+
+        if (data_wr_en[2])
+            data_array[data_addr][23:16]
+                <= data_wr_data[23:16];
+
+        if (data_wr_en[3])
+            data_array[data_addr][31:24]
+                <= data_wr_data[31:24];
+
+        if (data_rd_en)
+            data_rd_data <= data_array[data_addr];
+    end
+
+    always_comb begin
+        o_cpu_rd_data = 32'b0;
+        o_cpu_ready   = 1'b0;
+        o_cpu_stall   = 1'b0;
+
+        o_mem_valid   = 1'b0;
+        o_mem_write   = 1'b0;
+        o_mem_addr    = 32'b0;
+        o_mem_wr_data = 32'b0;
+        o_mem_byte_en = 4'b0000;
+
+        case (state)
+
+            S_IDLE: begin
+                if (i_cpu_valid)
+                    o_cpu_stall = 1'b1;
+            end
+
+            S_LOOKUP: begin
+                o_cpu_stall = 1'b1;
+            end
+
+            S_WRITEBACK_READ: begin
+                o_cpu_stall = 1'b1;
+            end
+
+            S_WRITEBACK_SEND: begin
+                o_cpu_stall   = 1'b1;
+                o_mem_valid   = 1'b1;
+                o_mem_write   = 1'b1;
+                o_mem_addr    = {
+                    victim_tag,
+                    req_index,
+                    word_count,
+                    2'b00
+                };
+                o_mem_wr_data = data_rd_data;
+                o_mem_byte_en = 4'b1111;
+            end
+
+            S_REFILL: begin
+                o_cpu_stall = 1'b1;
+                o_mem_valid = 1'b1;
+                o_mem_write = 1'b0;
+                o_mem_addr  = {
+                    req_tag,
+                    req_index,
+                    word_count,
+                    2'b00
+                };
+            end
+
+            S_MISS_READ: begin
+                o_cpu_stall = 1'b1;
+            end
+
+            S_MISS_WRITE: begin
+                o_cpu_stall = 1'b1;
+            end
+
+            S_RESPONSE: begin
+                o_cpu_ready = 1'b1;
+                o_cpu_stall = 1'b0;
+
+                if (req_uncached)
+                    o_cpu_rd_data = uncached_rd_data;
+                else
+                    o_cpu_rd_data = data_rd_data;
+            end
+
+            S_UNCACHED: begin
+                o_cpu_stall   = 1'b1;
+                o_mem_valid   = 1'b1;
+                o_mem_write   = req_write;
+                o_mem_addr    = req_addr;
+                o_mem_wr_data = req_wr_data;
+                o_mem_byte_en = req_byte_en;
+            end
+
+            default: begin
+                o_cpu_stall = 1'b0;
+            end
+
+        endcase
+    end
+
+    always_ff @(posedge i_clk) begin
+        if (i_rst) begin
+            state             <= S_IDLE;
+
+            req_addr          <= 32'b0;
+            req_write         <= 1'b0;
+            req_uncached      <= 1'b0;
+            req_wr_data       <= 32'b0;
+            req_byte_en       <= 4'b0000;
+
+            req_index         <= '0;
+            req_word          <= '0;
+            req_tag           <= '0;
+
+            victim_tag        <= '0;
+            word_count        <= '0;
+
+            uncached_rd_data  <= 32'b0;
+
+            valid_array       <= '0;
+            dirty_array       <= '0;
+        end else begin
+
+            case (state)
+
+                S_IDLE: begin
+                    if (i_cpu_valid) begin
+                        req_addr     <= i_cpu_addr;
+                        req_write    <= i_cpu_write;
+                        req_uncached <= i_cpu_uncached;
+                        req_wr_data  <= i_cpu_wr_data;
+                        req_byte_en  <= i_cpu_byte_en;
+
+                        req_index <=
+                            i_cpu_addr[
+                                INDEX_BITS + WORD_BITS + 1 :
+                                WORD_BITS + 2
+                            ];
+
+                        req_word <=
+                            i_cpu_addr[
+                                WORD_BITS + 1 :
+                                2
+                            ];
+
+                        req_tag <=
+                            i_cpu_addr[
+                                31 :
+                                INDEX_BITS + WORD_BITS + 2
+                            ];
+
+                        word_count <= '0;
+
+                        if (i_cpu_uncached)
+                            state <= S_UNCACHED;
+                        else
+                            state <= S_LOOKUP;
+                    end
+                end
+
+                S_LOOKUP: begin
+                    if (req_hit) begin
+                        if (req_write) begin
+                            dirty_array[req_index] <= 1'b1;
+                            state <= S_RESPONSE;
+                        end else begin
+                            state <= S_RESPONSE;
+                        end
+                    end else begin
+                        victim_tag <= tag_array[req_index];
+                        word_count <= '0;
+
+                        if (
+                            valid_array[req_index] &&
+                            dirty_array[req_index]
+                        )
+                            state <= S_WRITEBACK_READ;
+                        else
+                            state <= S_REFILL;
+                    end
+                end
+
+                S_WRITEBACK_READ: begin
+                    state <= S_WRITEBACK_SEND;
+                end
+
+                S_WRITEBACK_SEND: begin
+                    if (i_mem_ready) begin
+                        if (word_count == WORDS_PER_LINE - 1) begin
+                            word_count <= '0;
+                            state      <= S_REFILL;
+                        end else begin
+                            word_count <= word_count + 1'b1;
+                            state      <= S_WRITEBACK_READ;
+                        end
+                    end
+                end
+
+                S_REFILL: begin
+                    if (i_mem_ready) begin
+                        if (word_count == WORDS_PER_LINE - 1) begin
+                            tag_array[req_index]   <= req_tag;
+                            valid_array[req_index] <= 1'b1;
+                            dirty_array[req_index] <= 1'b0;
+                            word_count             <= '0;
+
+                            if (req_write)
+                                state <= S_MISS_WRITE;
+                            else
+                                state <= S_MISS_READ;
+                        end else begin
+                            word_count <= word_count + 1'b1;
+                        end
+                    end
+                end
+
+                S_MISS_READ: begin
+                    state <= S_RESPONSE;
+                end
+
+                S_MISS_WRITE: begin
+                    dirty_array[req_index] <= 1'b1;
+                    state <= S_RESPONSE;
+                end
+
+                S_RESPONSE: begin
+                    state <= S_IDLE;
+                end
+
+                S_UNCACHED: begin
+                    if (i_mem_ready) begin
+                        if (!req_write)
+                            uncached_rd_data <= i_mem_rd_data;
+
+                        state <= S_RESPONSE;
+                    end
+                end
+
+                default: begin
+                    state <= S_IDLE;
+                end
+
+            endcase
+        end
+    end
+
+endmodule
+
+=== FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\memory.sv ===
 import common_pkg::*;
 
 module memory (
-    // Global signals
     input   logic           i_clk,
     input   logic           i_rst,
-
-    // Pipeline control
     input   logic           i_stall,
     input   logic           i_flush,
 
-    // From Execute Stage
     input   logic           i_valid,
     input   logic [31:0]    i_pc,
     input   logic [4:0]     i_rd,
@@ -1084,191 +1558,108 @@ module memory (
     input   t_wb_src        i_wb_src,
     input   logic           i_illegal,
 
-    // To BRAM
+    output  logic           o_dmem_valid,
     output  logic [31:0]    o_dmem_addr,
     output  logic [31:0]    o_dmem_wr_data,
     output  logic           o_dmem_wr_en,
     output  logic [3:0]     o_dmem_byt_en,
+    input   logic [31:0]    i_dmem_rd_data,
 
-    // To Writeback Stage
     output  logic           o_wb_valid,
     output  logic [31:0]    o_wb_pc,
     output  logic [4:0]     o_wb_rd,
     output  logic [31:0]    o_wb_alu_res,
+    output  logic [31:0]    o_wb_mem_data,
     output  logic           o_wb_wr_en,
     output  t_wb_src        o_wb_src,
     output  t_mem_types     o_wb_mem_type,
     output  logic           o_wb_illegal
 );
 
+    assign o_dmem_valid =
+        i_valid &&
+        !i_illegal &&
+        (i_mem_read || i_mem_write) &&
+        !i_flush &&
+        !i_rst;
 
-    // ========================================================================
-    // Data-memory interface
-    // ========================================================================
-
-    // Address is always the effective address calculated by EX.
     assign o_dmem_addr = i_alu_result;
 
-
-    // A store may modify memory only when the instruction is active and valid.
     assign o_dmem_wr_en =
-        i_valid      &&
-        ~i_illegal   &&
-        i_mem_write  &&
-        ~i_stall     &&
-        ~i_flush     &&
-        ~i_rst;
-
-
-    // ========================================================================
-    // Store data alignment / byte enables
-    // ========================================================================
+        i_valid &&
+        !i_illegal &&
+        i_mem_write &&
+        !i_flush &&
+        !i_rst;
 
     always_comb begin
-
         o_dmem_wr_data = 32'b0;
         o_dmem_byt_en  = 4'b0000;
 
         if (
-            i_valid      &&
-            ~i_illegal   &&
-            i_mem_write  &&
-            ~i_stall     &&
-            ~i_flush     &&
-            ~i_rst
+            i_valid &&
+            !i_illegal &&
+            i_mem_write &&
+            !i_flush &&
+            !i_rst
         ) begin
-
             case (i_mem_type)
-
-                // ------------------------------------------------------------
-                // SB
-                //
-                // The low byte of rs2 must be written regardless of address
-                // offset. Replication places that byte on every BRAM lane;
-                // byte-enable selects the actual destination lane.
-                // ------------------------------------------------------------
-
                 STORE_BYTE: begin
-
-                    o_dmem_wr_data =
-                        {4{i_rs2_val[7:0]}};
-
-                    o_dmem_byt_en =
-                        4'b0001 << i_alu_result[1:0];
-
+                    o_dmem_wr_data = {4{i_rs2_val[7:0]}};
+                    o_dmem_byt_en  = 4'b0001 << i_alu_result[1:0];
                 end
-
-
-                // ------------------------------------------------------------
-                // SH
-                //
-                // For aligned halfword accesses:
-                //
-                // address[1] = 0 -> lanes 0/1
-                // address[1] = 1 -> lanes 2/3
-                //
-                // Replication ensures rs2[15:0] exists on either half.
-                // ------------------------------------------------------------
 
                 STORE_HALF: begin
-
-                    o_dmem_wr_data =
-                        {2{i_rs2_val[15:0]}};
-
-                    if (i_alu_result[1] == 1'b0)
-                        o_dmem_byt_en = 4'b0011;
-                    else
-                        o_dmem_byt_en = 4'b1100;
-
+                    o_dmem_wr_data = {2{i_rs2_val[15:0]}};
+                    o_dmem_byt_en  = i_alu_result[1] ? 4'b1100 : 4'b0011;
                 end
-
-
-                // ------------------------------------------------------------
-                // SW
-                // ------------------------------------------------------------
 
                 STORE_WORD: begin
-
                     o_dmem_wr_data = i_rs2_val;
                     o_dmem_byt_en  = 4'b1111;
-
                 end
-
 
                 default: begin
-
                     o_dmem_wr_data = 32'b0;
                     o_dmem_byt_en  = 4'b0000;
-
                 end
-
             endcase
-
         end
-
     end
-
-
-    // ========================================================================
-    // MEM -> WB pipeline register
-    //
-    // Priority: reset > flush > stall > normal
-    // ========================================================================
 
     always_ff @(posedge i_clk) begin
-
         if (i_rst) begin
-
-            o_wb_valid      <= 1'b0;
-            o_wb_pc         <= 32'b0;
-            o_wb_rd         <= 5'b0;
-            o_wb_alu_res    <= 32'b0;
-
-            o_wb_wr_en      <= 1'b0;
-            o_wb_src        <= WR_ALU_RES;
-            o_wb_mem_type   <= S_LOAD_BYTE;
-            o_wb_illegal    <= 1'b0;
-
+            o_wb_valid    <= 1'b0;
+            o_wb_pc       <= 32'b0;
+            o_wb_rd       <= 5'b0;
+            o_wb_alu_res  <= 32'b0;
+            o_wb_mem_data <= 32'b0;
+            o_wb_wr_en    <= 1'b0;
+            o_wb_src      <= WR_ALU_RES;
+            o_wb_mem_type <= S_LOAD_BYTE;
+            o_wb_illegal  <= 1'b0;
+        end else if (i_flush) begin
+            o_wb_valid    <= 1'b0;
+            o_wb_pc       <= 32'b0;
+            o_wb_rd       <= 5'b0;
+            o_wb_alu_res  <= 32'b0;
+            o_wb_mem_data <= 32'b0;
+            o_wb_wr_en    <= 1'b0;
+            o_wb_src      <= WR_ALU_RES;
+            o_wb_mem_type <= S_LOAD_BYTE;
+            o_wb_illegal  <= 1'b0;
+        end else if (!i_stall) begin
+            o_wb_valid    <= i_valid;
+            o_wb_pc       <= i_pc;
+            o_wb_rd       <= i_rd;
+            o_wb_alu_res  <= i_alu_result;
+            o_wb_mem_data <= i_mem_read ? i_dmem_rd_data : 32'b0;
+            o_wb_wr_en    <= i_reg_write && !i_illegal && i_valid;
+            o_wb_src      <= i_wb_src;
+            o_wb_mem_type <= i_mem_type;
+            o_wb_illegal  <= i_illegal;
         end
-
-        else if (i_flush) begin
-
-            // Inject a deterministic bubble.
-            o_wb_valid      <= 1'b0;
-            o_wb_pc         <= 32'b0;
-            o_wb_rd         <= 5'b0;
-            o_wb_alu_res    <= 32'b0;
-
-            o_wb_wr_en      <= 1'b0;
-            o_wb_src        <= WR_ALU_RES;
-            o_wb_mem_type   <= S_LOAD_BYTE;
-            o_wb_illegal    <= 1'b0;
-
-        end
-
-        else if (!i_stall) begin
-
-            o_wb_valid      <= i_valid;
-            o_wb_pc         <= i_pc;
-            o_wb_rd         <= i_rd;
-            o_wb_alu_res    <= i_alu_result;
-
-            o_wb_wr_en      <=
-                i_reg_write &&
-                ~i_illegal  &&
-                i_valid;
-
-            o_wb_src        <= i_wb_src;
-            o_wb_mem_type   <= i_mem_type;
-            o_wb_illegal    <= i_illegal;
-
-        end
-
-        // else:
-        // stall -> retain all MEM/WB pipeline registers
-
     end
-
 
 endmodule
 
@@ -1340,161 +1731,119 @@ module reg_file(
 endmodule
 
 === FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\riscv_core.sv ===
-// ============================================================================
-// File Name   : riscv_core.sv
-// Description : Top-level RV32I CPU core. Connects IF/ID/EX/MEM/WB,
-//               register file, forwarding, and hazard control.
-// ============================================================================
-
 import common_pkg::*;
 
 module riscv_core (
     input  logic        i_clk,
     input  logic        i_rst,
-
-    // Instruction memory interface
     output logic [31:0] o_imem_addr,
     input  logic [31:0] i_imem_data,
-
-    // Data memory interface
+    output logic        o_dmem_valid,
     output logic [31:0] o_dmem_addr,
     output logic [31:0] o_dmem_wr_data,
     output logic        o_dmem_wr_en,
     output logic [3:0]  o_dmem_byt_en,
-    input  logic [31:0] i_dmem_data
+    input  logic [31:0] i_dmem_data,
+    input  logic        i_dmem_stall
 );
-
-    // ========================================================================
-    // IF -> ID
-    // ========================================================================
 
     logic        if_valid;
     logic [31:0] if_pc;
     logic [31:0] if_instr;
-
-    // ========================================================================
-    // ID -> EX
-    // ========================================================================
+    logic        if_pred_taken;
+    logic [31:0] if_pred_target;
 
     logic        id_valid;
     logic [31:0] id_pc;
-
     logic [4:0]  id_rs1;
     logic [4:0]  id_rs2;
     logic [4:0]  id_rd;
-
     logic [31:0] id_imm;
-
     t_alu_ops    id_alu_op;
-
     logic        id_alu_inp_1;
     logic        id_alu_inp_2;
-
     logic        id_mem_read;
     logic        id_mem_write;
     t_mem_types  id_mem_type;
-
     logic        id_reg_write;
     t_wb_src     id_wb_src;
-
     logic        id_is_branch;
     t_branches   id_branch_type;
-
     logic        id_is_jump;
     logic        id_jalr;
     logic        id_illegal;
-
     logic [31:0] id_pc_plus_4;
-
-    // ========================================================================
-    // Register file read values
-    // ========================================================================
+    logic        id_pred_taken;
+    logic [31:0] id_pred_target;
 
     logic [31:0] rs1_val;
     logic [31:0] rs2_val;
 
-    // ========================================================================
-    // EX -> MEM
-    // ========================================================================
-
     logic        ex_valid;
     logic [31:0] ex_pc;
-
     logic [4:0]  ex_rd;
-
     logic [31:0] ex_alu_result;
     logic [31:0] ex_rs2_val;
-
     logic        ex_mem_read;
     logic        ex_mem_write;
     t_mem_types  ex_mem_type;
-
     logic        ex_reg_write;
     t_wb_src     ex_wb_src;
-
     logic        ex_illegal;
-
-    logic        ex_redirect;
+    logic        ex_taken;
     logic [31:0] ex_target;
-
-    // ========================================================================
-    // MEM -> WB
-    // ========================================================================
 
     logic        wb_valid;
     logic [31:0] wb_pc;
-
     logic [4:0]  wb_rd;
-
     logic [31:0] wb_alu_res;
-
+    logic [31:0] wb_mem_data;
     logic        wb_wr_en;
     t_wb_src     wb_src;
     t_mem_types  wb_mem_type;
-
     logic        wb_illegal;
-
-    // ========================================================================
-    // WB -> Register file
-    // ========================================================================
 
     logic        rf_wr_en;
     logic [4:0]  rf_wr_addr;
     logic [31:0] rf_wr_data;
 
-    // ========================================================================
-    // Hazard unit
-    // ========================================================================
-
     t_forwarding forward_a;
     t_forwarding forward_b;
 
-    logic fetch_stall;
-    logic decode_stall;
+    (* max_fanout = 32 *) logic fetch_stall;
+    (* max_fanout = 32 *) logic decode_stall;
+    (* max_fanout = 32 *) logic execute_stall;
+    (* max_fanout = 32 *) logic memory_stall;
 
     logic decode_flush;
     logic execute_flush;
 
-    // ========================================================================
-    // Decode-stage register addresses used by load-use detector
-    //
-    // We cannot blindly use instruction[19:15] and [24:20], because those
-    // fields aren't source registers for every instruction.
-    // ========================================================================
-
     logic [4:0] hazard_id_rs1;
     logic [4:0] hazard_id_rs2;
 
-    always_comb begin
+    logic [31:0] mem_forward_data;
+    logic        mem_can_forward;
 
+    logic        bp_pred_taken;
+    logic [31:0] bp_pred_target;
+    logic        bp_mispredict;
+    logic [31:0] bp_recovery_pc;
+
+    logic        bp_resolve_valid_q;
+    logic [31:0] bp_resolve_pc_q;
+    logic        bp_resolve_is_branch_q;
+    logic        bp_resolve_is_jump_q;
+    logic        bp_resolve_taken_q;
+    logic [31:0] bp_resolve_target_q;
+    logic        bp_resolve_pred_taken_q;
+    logic [31:0] bp_resolve_pred_target_q;
+
+    always_comb begin
         hazard_id_rs1 = 5'd0;
         hazard_id_rs2 = 5'd0;
 
         if (if_valid) begin
-
             case (if_instr[6:0])
-
-                // rs1 + rs2
                 OP_ALU,
                 OP_BRANCH,
                 OP_STORE: begin
@@ -1502,7 +1851,6 @@ module riscv_core (
                     hazard_id_rs2 = if_instr[24:20];
                 end
 
-                // rs1 only
                 OP_IMM,
                 OP_LOAD,
                 OP_JALR: begin
@@ -1510,36 +1858,19 @@ module riscv_core (
                     hazard_id_rs2 = 5'd0;
                 end
 
-                // LUI, AUIPC, JAL do not consume registers
                 default: begin
                     hazard_id_rs1 = 5'd0;
                     hazard_id_rs2 = 5'd0;
                 end
-
             endcase
         end
     end
 
-    // ========================================================================
-    // MEM forwarding value
-    //
-    // ALU instructions forward their ALU result.
-    // JAL/JALR forward PC+4.
-    //
-    // Loads cannot forward from MEM because the synchronous BRAM data does
-    // not arrive until WB. Load-use interlock handles this case.
-    // ========================================================================
-
-    logic [31:0] mem_forward_data;
-    logic        mem_can_forward;
-
     always_comb begin
-
         mem_forward_data = ex_alu_result;
         mem_can_forward  = ex_reg_write;
 
         case (ex_wb_src)
-
             WR_ALU_RES: begin
                 mem_forward_data = ex_alu_result;
             end
@@ -1549,7 +1880,6 @@ module riscv_core (
             end
 
             WR_READ_RES: begin
-                // Load data is not available from this stage yet.
                 mem_forward_data = 32'd0;
                 mem_can_forward  = 1'b0;
             end
@@ -1558,401 +1888,389 @@ module riscv_core (
                 mem_forward_data = ex_alu_result;
                 mem_can_forward  = 1'b0;
             end
-
         endcase
-
     end
 
-    // ========================================================================
-    // Fetch
-    // ========================================================================
+    always_ff @(posedge i_clk) begin
+        if (i_rst) begin
+            bp_resolve_valid_q       <= 1'b0;
+            bp_resolve_pc_q          <= 32'b0;
+            bp_resolve_is_branch_q   <= 1'b0;
+            bp_resolve_is_jump_q     <= 1'b0;
+            bp_resolve_taken_q       <= 1'b0;
+            bp_resolve_target_q      <= 32'b0;
+            bp_resolve_pred_taken_q  <= 1'b0;
+            bp_resolve_pred_target_q <= 32'b0;
+        end else begin
+            bp_resolve_valid_q <= 1'b0;
 
-    fetch u_fetch (
-        .i_clk          (i_clk),
-        .i_rst          (i_rst),
+            if (!execute_stall && !bp_mispredict) begin
+                bp_resolve_valid_q <=
+                    id_valid &&
+                    !id_illegal &&
+                    (id_is_branch || id_is_jump);
 
-        .i_stall        (fetch_stall),
+                bp_resolve_pc_q          <= id_pc;
+                bp_resolve_is_branch_q   <= id_is_branch;
+                bp_resolve_is_jump_q     <= id_is_jump;
+                bp_resolve_taken_q       <= ex_taken;
+                bp_resolve_target_q      <= ex_target;
+                bp_resolve_pred_taken_q  <= id_pred_taken;
+                bp_resolve_pred_target_q <= id_pred_target;
+            end
+        end
+    end
 
-        .i_redirect     (ex_redirect),
-        .i_target       (ex_target),
-
-        .i_imem_data    (i_imem_data),
-
-        .o_imem_addr    (o_imem_addr),
-
-        .o_valid        (if_valid),
-        .o_pc           (if_pc),
-        .o_instr        (if_instr)
+    branch_predictor #(
+        .ENTRIES(64)
+    ) u_branch_predictor (
+        .i_clk                 (i_clk),
+        .i_rst                 (i_rst),
+        .i_fetch_pc            (o_imem_addr),
+        .o_pred_taken          (bp_pred_taken),
+        .o_pred_target         (bp_pred_target),
+        .i_resolve_valid       (bp_resolve_valid_q),
+        .i_resolve_pc          (bp_resolve_pc_q),
+        .i_resolve_is_branch   (bp_resolve_is_branch_q),
+        .i_resolve_is_jump     (bp_resolve_is_jump_q),
+        .i_resolve_taken       (bp_resolve_taken_q),
+        .i_resolve_target      (bp_resolve_target_q),
+        .i_resolve_pred_taken  (bp_resolve_pred_taken_q),
+        .i_resolve_pred_target (bp_resolve_pred_target_q),
+        .o_mispredict          (bp_mispredict),
+        .o_recovery_pc         (bp_recovery_pc)
     );
 
-    // ========================================================================
-    // Decode
-    //
-    // Both redirect flushes and load-use bubbles kill the ID/EX contents.
-    //
-    // Your hazard signal named "execute_flush" really means:
-    //     inject a bubble INTO the Execute stage,
-    // which means flushing the decoder's ID/EX pipeline registers.
-    // ========================================================================
+    fetch u_fetch (
+        .i_clk         (i_clk),
+        .i_rst         (i_rst),
+        .i_stall       (fetch_stall),
+        .i_redirect    (bp_mispredict),
+        .i_target      (bp_recovery_pc),
+        .i_pred_taken  (bp_pred_taken),
+        .i_pred_target (bp_pred_target),
+        .i_imem_data   (i_imem_data),
+        .o_imem_addr   (o_imem_addr),
+        .o_valid       (if_valid),
+        .o_pc          (if_pc),
+        .o_instr       (if_instr),
+        .o_pred_taken  (if_pred_taken),
+        .o_pred_target (if_pred_target)
+    );
 
     decoder u_decoder (
         .i_clk          (i_clk),
         .i_rst          (i_rst),
-
         .i_valid        (if_valid),
         .i_pc           (if_pc),
         .i_instr        (if_instr),
-
+        .i_pred_taken   (if_pred_taken),
+        .i_pred_target  (if_pred_target),
         .i_stall        (decode_stall),
         .i_flush        (decode_flush | execute_flush),
-
         .o_valid        (id_valid),
         .o_pc           (id_pc),
-
         .o_rs1          (id_rs1),
         .o_rs2          (id_rs2),
         .o_rd           (id_rd),
-
         .o_imm          (id_imm),
-
         .o_alu_op       (id_alu_op),
         .o_alu_inp_1    (id_alu_inp_1),
         .o_alu_inp_2    (id_alu_inp_2),
-
         .o_mem_read     (id_mem_read),
         .o_mem_write    (id_mem_write),
         .o_mem_type     (id_mem_type),
-
         .o_reg_write    (id_reg_write),
         .o_wr_from      (id_wb_src),
-
         .o_is_branch    (id_is_branch),
         .o_branch_type  (id_branch_type),
-
         .o_is_jump      (id_is_jump),
         .o_jalr         (id_jalr),
-
         .o_illegal      (id_illegal),
-
-        .o_pc_plus_4    (id_pc_plus_4)
+        .o_pc_plus_4    (id_pc_plus_4),
+        .o_pred_taken   (id_pred_taken),
+        .o_pred_target  (id_pred_target)
     );
-
-    // ========================================================================
-    // Register File
-    // ========================================================================
 
     reg_file u_reg_file (
         .i_clk          (i_clk),
-
         .i_rd_val       (rf_wr_data),
         .i_rd_addr      (rf_wr_addr),
-
         .i_rs1_addr     (id_rs1),
         .i_rs2_addr     (id_rs2),
-
         .i_write_enable (rf_wr_en),
-
         .i_rst          (i_rst),
-
         .o_rs1_val      (rs1_val),
         .o_rs2_val      (rs2_val)
     );
 
-    // ========================================================================
-    // Execute
-    // ========================================================================
-
     execute u_execute (
-        .i_clk              (i_clk),
-        .i_rst              (i_rst),
-
-        // With fixed-latency BRAM, MEM never backpressures EX.
-        .i_stall            (1'b0),
-
-        // Load-use bubbling occurs in ID/EX, not EX/MEM.
-        .i_flush            (1'b0),
-
-        .i_valid            (id_valid),
-
-        .i_pc               (id_pc),
-
-        .i_rs1              (id_rs1),
-        .i_rs2              (id_rs2),
-        .i_rd               (id_rd),
-
-        .i_imm              (id_imm),
-
-        .i_alu_op           (id_alu_op),
-        .i_alu_inp_1        (id_alu_inp_1),
-        .i_alu_inp_2        (id_alu_inp_2),
-
-        .i_mem_read         (id_mem_read),
-        .i_mem_write        (id_mem_write),
-        .i_mem_type         (id_mem_type),
-
-        .i_reg_write        (id_reg_write),
-        .i_wb_src           (id_wb_src),
-
-        .i_is_branch        (id_is_branch),
-        .i_branch_type      (id_branch_type),
-
-        .i_is_jump          (id_is_jump),
-        .i_jalr             (id_jalr),
-
-        .i_illegal          (id_illegal),
-
-        .i_rs1_val          (rs1_val),
-        .i_rs2_val          (rs2_val),
-
-        .i_forward_op_a     (forward_a),
-        .i_forward_op_b     (forward_b),
-
-        .i_mem_fwd_data     (mem_forward_data),
-        .i_wb_fwd_data      (rf_wr_data),
-
-        .o_valid            (ex_valid),
-        .o_pc               (ex_pc),
-
-        .o_rd               (ex_rd),
-
-        .o_alu_result       (ex_alu_result),
-        .o_rs2_val          (ex_rs2_val),
-
-        .o_mem_read         (ex_mem_read),
-        .o_mem_write        (ex_mem_write),
-        .o_mem_type         (ex_mem_type),
-
-        .o_reg_write        (ex_reg_write),
-        .o_wb_src           (ex_wb_src),
-
-        .o_illegal          (ex_illegal),
-
-        .o_redirect         (ex_redirect),
-        .o_target           (ex_target)
+        .i_clk          (i_clk),
+        .i_rst          (i_rst),
+        .i_stall        (execute_stall),
+        .i_flush        (bp_mispredict),
+        .i_valid        (id_valid),
+        .i_pc           (id_pc),
+        .i_rs1          (id_rs1),
+        .i_rs2          (id_rs2),
+        .i_rd           (id_rd),
+        .i_imm          (id_imm),
+        .i_alu_op       (id_alu_op),
+        .i_alu_inp_1    (id_alu_inp_1),
+        .i_alu_inp_2    (id_alu_inp_2),
+        .i_mem_read     (id_mem_read),
+        .i_mem_write    (id_mem_write),
+        .i_mem_type     (id_mem_type),
+        .i_reg_write    (id_reg_write),
+        .i_wb_src       (id_wb_src),
+        .i_is_branch    (id_is_branch),
+        .i_branch_type  (id_branch_type),
+        .i_is_jump      (id_is_jump),
+        .i_jalr         (id_jalr),
+        .i_illegal      (id_illegal),
+        .i_rs1_val      (rs1_val),
+        .i_rs2_val      (rs2_val),
+        .i_forward_op_a (forward_a),
+        .i_forward_op_b (forward_b),
+        .i_mem_fwd_data (mem_forward_data),
+        .i_wb_fwd_data  (rf_wr_data),
+        .o_valid        (ex_valid),
+        .o_pc           (ex_pc),
+        .o_rd           (ex_rd),
+        .o_alu_result   (ex_alu_result),
+        .o_rs2_val      (ex_rs2_val),
+        .o_mem_read     (ex_mem_read),
+        .o_mem_write    (ex_mem_write),
+        .o_mem_type     (ex_mem_type),
+        .o_reg_write    (ex_reg_write),
+        .o_wb_src       (ex_wb_src),
+        .o_illegal      (ex_illegal),
+        .o_redirect     (ex_taken),
+        .o_target       (ex_target)
     );
-
-    // ========================================================================
-    // Memory
-    // ========================================================================
 
     memory u_memory (
-        .i_clk              (i_clk),
-        .i_rst              (i_rst),
-
-        .i_stall            (1'b0),
-        .i_flush            (1'b0),
-
-        .i_valid            (ex_valid),
-
-        .i_pc               (ex_pc),
-        .i_rd               (ex_rd),
-
-        .i_alu_result       (ex_alu_result),
-        .i_rs2_val          (ex_rs2_val),
-
-        .i_mem_read         (ex_mem_read),
-        .i_mem_write        (ex_mem_write),
-        .i_mem_type         (ex_mem_type),
-
-        .i_reg_write        (ex_reg_write),
-        .i_wb_src           (ex_wb_src),
-
-        .i_illegal          (ex_illegal),
-
-        .o_dmem_addr        (o_dmem_addr),
-        .o_dmem_wr_data     (o_dmem_wr_data),
-        .o_dmem_wr_en       (o_dmem_wr_en),
-        .o_dmem_byt_en      (o_dmem_byt_en),
-
-        .o_wb_valid         (wb_valid),
-        .o_wb_pc            (wb_pc),
-        .o_wb_rd            (wb_rd),
-        .o_wb_alu_res       (wb_alu_res),
-        .o_wb_wr_en         (wb_wr_en),
-        .o_wb_src           (wb_src),
-        .o_wb_mem_type      (wb_mem_type),
-        .o_wb_illegal       (wb_illegal)
+        .i_clk          (i_clk),
+        .i_rst          (i_rst),
+        .i_stall        (memory_stall),
+        .i_flush        (1'b0),
+        .i_valid        (ex_valid),
+        .i_pc           (ex_pc),
+        .i_rd           (ex_rd),
+        .i_alu_result   (ex_alu_result),
+        .i_rs2_val      (ex_rs2_val),
+        .i_mem_read     (ex_mem_read),
+        .i_mem_write    (ex_mem_write),
+        .i_mem_type     (ex_mem_type),
+        .i_reg_write    (ex_reg_write),
+        .i_wb_src       (ex_wb_src),
+        .i_illegal      (ex_illegal),
+        .o_dmem_valid   (o_dmem_valid),
+        .o_dmem_addr    (o_dmem_addr),
+        .o_dmem_wr_data (o_dmem_wr_data),
+        .o_dmem_wr_en   (o_dmem_wr_en),
+        .o_dmem_byt_en  (o_dmem_byt_en),
+        .i_dmem_rd_data (i_dmem_data),
+        .o_wb_valid     (wb_valid),
+        .o_wb_pc        (wb_pc),
+        .o_wb_rd        (wb_rd),
+        .o_wb_alu_res   (wb_alu_res),
+        .o_wb_mem_data  (wb_mem_data),
+        .o_wb_wr_en     (wb_wr_en),
+        .o_wb_src       (wb_src),
+        .o_wb_mem_type  (wb_mem_type),
+        .o_wb_illegal   (wb_illegal)
     );
-
-    // ========================================================================
-    // Writeback
-    // ========================================================================
 
     writeback u_writeback (
-        .i_wb_valid         (wb_valid),
-
-        .i_wb_pc            (wb_pc),
-        .i_wb_rd            (wb_rd),
-
-        .i_wb_alu_res       (wb_alu_res),
-
-        .i_wb_wr_en         (wb_wr_en),
-        .i_wb_src           (wb_src),
-        .i_wb_mem_type      (wb_mem_type),
-        .i_wb_illegal       (wb_illegal),
-
-        .i_dmem_data        (i_dmem_data),
-
-        .o_rf_wr_en         (rf_wr_en),
-        .o_rf_rd_addr       (rf_wr_addr),
-        .o_rf_wr_data       (rf_wr_data)
+        .i_stall        (memory_stall),
+        .i_wb_valid     (wb_valid),
+        .i_wb_pc        (wb_pc),
+        .i_wb_rd        (wb_rd),
+        .i_wb_alu_res   (wb_alu_res),
+        .i_wb_mem_data  (wb_mem_data),
+        .i_wb_wr_en     (wb_wr_en),
+        .i_wb_src       (wb_src),
+        .i_wb_mem_type  (wb_mem_type),
+        .i_wb_illegal   (wb_illegal),
+        .o_rf_wr_en     (rf_wr_en),
+        .o_rf_rd_addr   (rf_wr_addr),
+        .o_rf_wr_data   (rf_wr_data)
     );
 
-    // ========================================================================
-    // Hazard / forwarding unit
-    // ========================================================================
-
     hazard_unit u_hazard (
-        // Current instruction waiting in ID
-        .i_id_rs1           (hazard_id_rs1),
-        .i_id_rs2           (hazard_id_rs2),
-
-        // Current instruction in EX
-        .i_ex_rs1           (id_rs1),
-        .i_ex_rs2           (id_rs2),
-        .i_ex_rd            (id_rd),
-
-        .i_ex_mem_read      (id_mem_read),
-
-        .i_ex_redirect      (ex_redirect),
-
-        // Current instruction in MEM
-        .i_mem_rd           (ex_rd),
-        .i_mem_reg_wr       (mem_can_forward),
-
-        // Current instruction in WB
-        .i_wb_rd            (wb_rd),
-        .i_wb_reg_wr        (wb_wr_en),
-
-        .o_forward_op_a     (forward_a),
-        .o_forward_op_b     (forward_b),
-
-        .o_fetch_stall      (fetch_stall),
-        .o_decode_stall     (decode_stall),
-
-        .o_decode_flush     (decode_flush),
-        .o_execute_flush    (execute_flush)
+        .i_id_rs1        (hazard_id_rs1),
+        .i_id_rs2        (hazard_id_rs2),
+        .i_ex_rs1        (id_rs1),
+        .i_ex_rs2        (id_rs2),
+        .i_ex_rd         (id_rd),
+        .i_ex_mem_read   (id_mem_read),
+        .i_ex_mispredict (bp_mispredict),
+        .i_mem_rd        (ex_rd),
+        .i_mem_reg_wr    (mem_can_forward),
+        .i_wb_rd         (wb_rd),
+        .i_wb_reg_wr     (wb_wr_en),
+        .i_cache_stall   (i_dmem_stall),
+        .o_forward_op_a  (forward_a),
+        .o_forward_op_b  (forward_b),
+        .o_fetch_stall   (fetch_stall),
+        .o_decode_stall  (decode_stall),
+        .o_execute_stall (execute_stall),
+        .o_memory_stall  (memory_stall),
+        .o_decode_flush  (decode_flush),
+        .o_execute_flush (execute_flush)
     );
 
 endmodule
 
 === FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\riscv_soc.sv ===
-// ============================================================================
-// File Name   : riscv_soc.sv
-// Description : RV32I core with local instruction and data BRAM.
-// ============================================================================
-
 module riscv_soc #(
     parameter int IMEM_DEPTH = 4096,
     parameter int DMEM_DEPTH = 4096,
-
-    parameter string IMEM_INIT_FILE = "",
+    parameter int L1_LINES = 64,
+    parameter int L1_WORDS_PER_LINE = 4,
+    parameter string IMEM_INIT_FILE = "program.mem",
     parameter string DMEM_INIT_FILE = ""
 )(
-    input logic i_clk,
-    input logic i_rst,
-    input logic i_uart_rx,
-    output logic o_uart_tx
+    input  logic i_clk,
+    input  logic i_rst,
+    input  logic i_uart_rx,
+    output logic o_uart_tx,
+    output logic [31:0] o_debug_pc,
+    output logic [31:0] o_debug_dmem_addr,
+    output logic        o_debug_dmem_valid
 );
-
-    // ========================================================================
-    // Instruction memory signals
-    // ========================================================================
 
     logic [31:0] imem_addr;
     logic [31:0] imem_data;
 
-    // ========================================================================
-    // Data memory signals
-    // ========================================================================
+    logic        cpu_dmem_valid;
+    logic [31:0] cpu_dmem_addr;
+    logic [31:0] cpu_dmem_wr_data;
+    logic        cpu_dmem_wr_en;
+    logic [3:0]  cpu_dmem_byte_en;
+    logic [31:0] cpu_dmem_rd_data;
+    logic        cpu_dmem_ready;
+    logic        cpu_dmem_stall;
 
-    logic [31:0] dmem_addr;
-    logic [31:0] dmem_wr_data;
-    logic        dmem_wr_en;
-    logic [3:0]  dmem_byte_en;
-    logic [31:0] dmem_rd_data;
+    logic        cache_mem_valid;
+    logic        cache_mem_write;
+    logic [31:0] cache_mem_addr;
+    logic [31:0] cache_mem_wr_data;
+    logic [3:0]  cache_mem_byte_en;
+    logic        cache_mem_ready;
+    logic [31:0] cache_mem_rd_data;
 
-    // ========================================================================
-    // CPU
-    // ========================================================================
+    logic        bram_read_pending;
+    logic        bram_wr_en;
+    logic [31:0] bram_rd_data;
+
+    assign o_uart_tx          = 1'b1;
+    assign o_debug_pc         = imem_addr;
+    assign o_debug_dmem_addr  = cpu_dmem_addr;
+    assign o_debug_dmem_valid = cpu_dmem_valid;
 
     riscv_core u_core (
-        .i_clk              (i_clk),
-        .i_rst              (i_rst),
-
-        .o_imem_addr        (imem_addr),
-        .i_imem_data        (imem_data),
-
-        .o_dmem_addr        (dmem_addr),
-        .o_dmem_wr_data     (dmem_wr_data),
-        .o_dmem_wr_en       (dmem_wr_en),
-        .o_dmem_byt_en      (dmem_byte_en),
-
-        .i_dmem_data        (dmem_rd_data)
+        .i_clk          (i_clk),
+        .i_rst          (i_rst),
+        .o_imem_addr    (imem_addr),
+        .i_imem_data    (imem_data),
+        .o_dmem_valid   (cpu_dmem_valid),
+        .o_dmem_addr    (cpu_dmem_addr),
+        .o_dmem_wr_data (cpu_dmem_wr_data),
+        .o_dmem_wr_en   (cpu_dmem_wr_en),
+        .o_dmem_byt_en  (cpu_dmem_byte_en),
+        .i_dmem_data    (cpu_dmem_rd_data),
+        .i_dmem_stall   (cpu_dmem_stall)
     );
-
-    // ========================================================================
-    // Instruction BRAM
-    // ========================================================================
 
     instruction_memory #(
-        .DEPTH_WORDS        (IMEM_DEPTH),
-        .INIT_FILE          (IMEM_INIT_FILE)
+        .DEPTH_WORDS (IMEM_DEPTH),
+        .INIT_FILE   (IMEM_INIT_FILE)
     ) u_imem (
-        .i_clk              (i_clk),
-        .i_addr             (imem_addr),
-        .o_data             (imem_data)
+        .i_clk  (i_clk),
+        .i_addr (imem_addr),
+        .o_data (imem_data)
     );
 
-    // ========================================================================
-    // Data BRAM
-    // ========================================================================
+    l1_dcache #(
+        .LINES          (L1_LINES),
+        .WORDS_PER_LINE (L1_WORDS_PER_LINE)
+    ) u_l1_dcache (
+        .i_clk          (i_clk),
+        .i_rst          (i_rst),
+        .i_cpu_valid    (cpu_dmem_valid),
+        .i_cpu_write    (cpu_dmem_wr_en),
+        .i_cpu_uncached (1'b0),
+        .i_cpu_addr     (cpu_dmem_addr),
+        .i_cpu_wr_data  (cpu_dmem_wr_data),
+        .i_cpu_byte_en  (cpu_dmem_byte_en),
+        .o_cpu_rd_data  (cpu_dmem_rd_data),
+        .o_cpu_ready    (cpu_dmem_ready),
+        .o_cpu_stall    (cpu_dmem_stall),
+        .o_mem_valid    (cache_mem_valid),
+        .o_mem_write    (cache_mem_write),
+        .o_mem_addr     (cache_mem_addr),
+        .o_mem_wr_data  (cache_mem_wr_data),
+        .o_mem_byte_en  (cache_mem_byte_en),
+        .i_mem_ready    (cache_mem_ready),
+        .i_mem_rd_data  (cache_mem_rd_data)
+    );
+
+    assign bram_wr_en =
+        cache_mem_valid &&
+        cache_mem_write &&
+        !bram_read_pending;
+
+    assign cache_mem_ready =
+        bram_read_pending ||
+        (
+            cache_mem_valid &&
+            cache_mem_write &&
+            !bram_read_pending
+        );
+
+    assign cache_mem_rd_data = bram_rd_data;
+
+    always_ff @(posedge i_clk) begin
+        if (i_rst) begin
+            bram_read_pending <= 1'b0;
+        end else if (bram_read_pending) begin
+            bram_read_pending <= 1'b0;
+        end else if (cache_mem_valid && !cache_mem_write) begin
+            bram_read_pending <= 1'b1;
+        end
+    end
 
     data_memory #(
-        .DEPTH_WORDS        (DMEM_DEPTH),
-        .INIT_FILE          (DMEM_INIT_FILE)
+        .DEPTH_WORDS (DMEM_DEPTH),
+        .INIT_FILE   (DMEM_INIT_FILE)
     ) u_dmem (
-        .i_clk              (i_clk),
-
-        .i_addr             (dmem_addr),
-
-        .i_wr_data          (dmem_wr_data),
-        .i_wr_en            (dmem_wr_en),
-        .i_byte_en          (dmem_byte_en),
-
-        .o_rd_data          (dmem_rd_data)
+        .i_clk      (i_clk),
+        .i_addr     (cache_mem_addr),
+        .i_wr_data  (cache_mem_wr_data),
+        .i_wr_en    (bram_wr_en),
+        .i_byte_en  (cache_mem_byte_en),
+        .o_rd_data  (bram_rd_data)
     );
 
 endmodule
 
 === FILE: C:\Users\kevin\Desktop\projects\risc\riscv-cpu\rtl\writeback.sv ===
-// ============================================================================
-// File Name   : writeback.sv
-// Author      : Kevin Toledo Fernandez / GitHub: systemkev
-// Date        : 2026-06-30
-// Project     : RISC-V 32-bit Processor
-// Description : 
-//
-// License     : MIT
-// ============================================================================
-
 import common_pkg::*;
 
 module writeback (
-    // From Writeback Stage 
-    input   logic           i_wb_valid, 
+    input   logic           i_stall,
+    input   logic           i_wb_valid,
     input   logic [31:0]    i_wb_pc,
     input   logic [4:0]     i_wb_rd,
     input   logic [31:0]    i_wb_alu_res,
+    input   logic [31:0]    i_wb_mem_data,
     input   logic           i_wb_wr_en,
     input   t_wb_src        i_wb_src,
     input   t_mem_types     i_wb_mem_type,
     input   logic           i_wb_illegal,
 
-    // Data from BRAM 
-    input   logic [31:0]    i_dmem_data,
-
-    // Outputs to Register File
     output  logic           o_rf_wr_en,
     output  logic [4:0]     o_rf_rd_addr,
     output  logic [31:0]    o_rf_wr_data
@@ -1963,45 +2281,42 @@ module writeback (
     logic [7:0]  extracted_byte;
 
     always_comb begin
-        formatted_mem_data  = 32'b0;
-        extracted_byte      = 8'b0;
-        extracted_half      = 16'b0;
+        extracted_byte = 8'b0;
+        extracted_half = 16'b0;
 
         case (i_wb_alu_res[1:0])
-            2'b00:  extracted_byte = i_dmem_data[7:0];
-            2'b01:  extracted_byte = i_dmem_data[15:8];
-            2'b10:  extracted_byte = i_dmem_data[23:16];
-            2'b11:  extracted_byte = i_dmem_data[31:24];
-        endcase 
+            2'b00: extracted_byte = i_wb_mem_data[7:0];
+            2'b01: extracted_byte = i_wb_mem_data[15:8];
+            2'b10: extracted_byte = i_wb_mem_data[23:16];
+            2'b11: extracted_byte = i_wb_mem_data[31:24];
+        endcase
 
         case (i_wb_alu_res[1])
-            1'b0:   extracted_half = i_dmem_data[15:0];
-            1'b1:   extracted_half = i_dmem_data[31:16];
-        endcase 
+            1'b0: extracted_half = i_wb_mem_data[15:0];
+            1'b1: extracted_half = i_wb_mem_data[31:16];
+        endcase
 
         case (i_wb_mem_type)
-            S_LOAD_BYTE:    formatted_mem_data = {{24{extracted_byte[7]}}, extracted_byte};
-            U_LOAD_BYTE:    formatted_mem_data = {24'b0, extracted_byte};
-            S_LOAD_HALF:    formatted_mem_data = {{16{extracted_half[15]}}, extracted_half};
-            U_LOAD_HALF:    formatted_mem_data = {16'b0, extracted_half};
-            S_LOAD_WORD:    formatted_mem_data = i_dmem_data;
-            default:        formatted_mem_data = i_dmem_data;
-        endcase 
-    end
-
-    // Pass control signals directly to the register file
-    assign o_rf_wr_en       = i_wb_wr_en;
-    assign o_rf_rd_addr     = i_wb_rd;
-
-    // Multiplex the final data to write to the rf 
-    always_comb begin 
-        case (i_wb_src) 
-            WR_ALU_RES:         o_rf_wr_data = i_wb_alu_res;
-            WR_READ_RES:        o_rf_wr_data = formatted_mem_data;
-            WR_PC_PLUS_4:       o_rf_wr_data = i_wb_pc + 32'd4;
-            default:            o_rf_wr_data = 32'b0;
+            S_LOAD_BYTE: formatted_mem_data = {{24{extracted_byte[7]}}, extracted_byte};
+            U_LOAD_BYTE: formatted_mem_data = {24'b0, extracted_byte};
+            S_LOAD_HALF: formatted_mem_data = {{16{extracted_half[15]}}, extracted_half};
+            U_LOAD_HALF: formatted_mem_data = {16'b0, extracted_half};
+            S_LOAD_WORD: formatted_mem_data = i_wb_mem_data;
+            default:     formatted_mem_data = i_wb_mem_data;
         endcase
     end
 
-endmodule 
+    assign o_rf_wr_en   = i_wb_valid && i_wb_wr_en && !i_wb_illegal && !i_stall;
+    assign o_rf_rd_addr = i_wb_rd;
+
+    always_comb begin
+        case (i_wb_src)
+            WR_ALU_RES:   o_rf_wr_data = i_wb_alu_res;
+            WR_READ_RES:  o_rf_wr_data = formatted_mem_data;
+            WR_PC_PLUS_4: o_rf_wr_data = i_wb_pc + 32'd4;
+            default:      o_rf_wr_data = 32'b0;
+        endcase
+    end
+
+endmodule
 

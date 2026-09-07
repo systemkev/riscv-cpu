@@ -8,6 +8,7 @@ module writeback_TB;
     // DUT Inputs
     // =========================================================================
 
+    logic           i_stall;
     logic           i_wb_valid;
     logic [31:0]    i_wb_pc;
     logic [4:0]     i_wb_rd;
@@ -17,7 +18,7 @@ module writeback_TB;
     t_mem_types     i_wb_mem_type;
     logic           i_wb_illegal;
 
-    logic [31:0]    i_dmem_data;
+    logic [31:0]    i_wb_mem_data;
 
     // =========================================================================
     // DUT Outputs
@@ -40,6 +41,7 @@ module writeback_TB;
     // =========================================================================
 
     writeback dut (
+        .i_stall        (i_stall),
         .i_wb_valid     (i_wb_valid),
         .i_wb_pc        (i_wb_pc),
         .i_wb_rd        (i_wb_rd),
@@ -49,7 +51,7 @@ module writeback_TB;
         .i_wb_mem_type  (i_wb_mem_type),
         .i_wb_illegal   (i_wb_illegal),
 
-        .i_dmem_data    (i_dmem_data),
+        .i_wb_mem_data    (i_wb_mem_data),
 
         .o_rf_wr_en     (o_rf_wr_en),
         .o_rf_rd_addr   (o_rf_rd_addr),
@@ -213,11 +215,11 @@ module writeback_TB;
             i_wb_src      = wb_src;
             i_wb_mem_type = wb_mem_type;
             i_wb_illegal  = wb_illegal;
-            i_dmem_data   = dmem_data;
+            i_wb_mem_data   = dmem_data;
 
             check_outputs(
                 test_name,
-                wb_wr_en,
+                wb_valid && wb_wr_en && !wb_illegal && !i_stall,
                 wb_rd,
                 expected_data
             );
@@ -709,7 +711,7 @@ module writeback_TB;
 
 
     // =========================================================================
-    // Test: valid / illegal behavior
+    // Test: valid / illegal gating
     //
     // IMPORTANT:
     // i_wb_valid and i_wb_illegal are not referenced anywhere by the current DUT.
@@ -719,12 +721,12 @@ module writeback_TB;
     // writes, these tests should be changed accordingly.
     // =========================================================================
 
-    task automatic test_unused_control_inputs;
+    task automatic test_valid_illegal_gating;
 
         $display("\n--- valid / illegal input behavior tests ---");
 
         drive_and_check(
-            "Valid=0 currently does not suppress write",
+            "Valid=0 suppresses write",
             1'b0,
             32'h1000,
             5'd5,
@@ -738,7 +740,7 @@ module writeback_TB;
         );
 
         drive_and_check(
-            "Illegal=1 currently does not suppress write",
+            "Illegal=1 suppresses write",
             1'b1,
             32'h1000,
             5'd6,
@@ -752,7 +754,7 @@ module writeback_TB;
         );
 
         drive_and_check(
-            "Valid=0 illegal=1 currently does not suppress write",
+            "Valid=0 illegal=1 suppresses write",
             1'b0,
             32'h1000,
             5'd7,
@@ -1068,6 +1070,45 @@ module writeback_TB;
     // Main test sequence
     // =========================================================================
 
+
+    task automatic test_stall_gating;
+
+        $display("\n--- Stall gating tests ---");
+
+        i_stall = 1'b1;
+
+        drive_and_check(
+            "Stall suppresses register write",
+            1'b1,
+            32'h0000_1000,
+            5'd9,
+            32'hABCD_1234,
+            1'b1,
+            WR_ALU_RES,
+            S_LOAD_WORD,
+            1'b0,
+            32'hDEAD_BEEF,
+            32'hABCD_1234
+        );
+
+        i_stall = 1'b0;
+
+        drive_and_check(
+            "Write resumes after stall",
+            1'b1,
+            32'h0000_1000,
+            5'd9,
+            32'hABCD_1234,
+            1'b1,
+            WR_ALU_RES,
+            S_LOAD_WORD,
+            1'b0,
+            32'hDEAD_BEEF,
+            32'hABCD_1234
+        );
+
+    endtask
+
     initial begin
 
         $display("============================================================");
@@ -1078,6 +1119,7 @@ module writeback_TB;
         // Default initialization
         // ---------------------------------------------------------------------
 
+        i_stall       = 1'b0;
         i_wb_valid    = 1'b0;
         i_wb_pc       = 32'b0;
         i_wb_rd       = 5'b0;
@@ -1086,7 +1128,7 @@ module writeback_TB;
         i_wb_src      = WR_ALU_RES;
         i_wb_mem_type = S_LOAD_WORD;
         i_wb_illegal  = 1'b0;
-        i_dmem_data   = 32'b0;
+        i_wb_mem_data   = 32'b0;
 
         #5;
 
@@ -1108,7 +1150,8 @@ module writeback_TB;
         test_halfword_all_offsets();
 
         test_control_passthrough();
-        test_unused_control_inputs();
+        test_valid_illegal_gating();
+        test_stall_gating();
 
         test_mux_isolation();
 

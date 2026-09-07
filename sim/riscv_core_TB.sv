@@ -27,11 +27,13 @@ module riscv_core_TB;
     logic [31:0] o_imem_addr;
     logic [31:0] i_imem_data;
 
+    logic        o_dmem_valid;
     logic [31:0] o_dmem_addr;
     logic [31:0] o_dmem_wr_data;
     logic        o_dmem_wr_en;
     logic [3:0]  o_dmem_byt_en;
     logic [31:0] i_dmem_data;
+    logic        i_dmem_stall;
 
     logic [31:0] imem [0:IMEM_WORDS-1];
     logic [31:0] dmem [0:DMEM_WORDS-1];
@@ -53,11 +55,13 @@ module riscv_core_TB;
         .o_imem_addr    (o_imem_addr),
         .i_imem_data    (i_imem_data),
 
+        .o_dmem_valid   (o_dmem_valid),
         .o_dmem_addr    (o_dmem_addr),
         .o_dmem_wr_data (o_dmem_wr_data),
         .o_dmem_wr_en   (o_dmem_wr_en),
         .o_dmem_byt_en  (o_dmem_byt_en),
-        .i_dmem_data    (i_dmem_data)
+        .i_dmem_data    (i_dmem_data),
+        .i_dmem_stall   (i_dmem_stall)
     );
 
     // ========================================================================
@@ -77,8 +81,8 @@ module riscv_core_TB;
     // ========================================================================
 
     initial begin
-        i_imem_data = NOP;
-        i_dmem_data = 32'b0;
+        i_imem_data  = NOP;
+        i_dmem_stall = 1'b0;
     end
 
     always @(posedge i_clk) begin
@@ -88,13 +92,19 @@ module riscv_core_TB;
             i_imem_data <= NOP;
     end
 
-    always @(posedge i_clk) begin
+    always_comb begin
         if ((o_dmem_addr >> 2) < DMEM_WORDS)
-            i_dmem_data <= dmem[o_dmem_addr[DMEM_AW+1:2]];
+            i_dmem_data = dmem[o_dmem_addr[DMEM_AW+1:2]];
         else
-            i_dmem_data <= 32'hDEAD_BEEF;
+            i_dmem_data = 32'hDEAD_BEEF;
+    end
 
-        if (o_dmem_wr_en === 1'b1) begin
+    always @(posedge i_clk) begin
+        if (
+            o_dmem_valid === 1'b1 &&
+            o_dmem_wr_en === 1'b1 &&
+            i_dmem_stall === 1'b0
+        ) begin
             if ((o_dmem_addr >> 2) < DMEM_WORDS) begin
                 if (o_dmem_byt_en[0]) dmem[o_dmem_addr[DMEM_AW+1:2]][7:0]   <= o_dmem_wr_data[7:0];
                 if (o_dmem_byt_en[1]) dmem[o_dmem_addr[DMEM_AW+1:2]][15:8]  <= o_dmem_wr_data[15:8];
@@ -116,10 +126,10 @@ module riscv_core_TB;
             if (dut.fetch_stall)
                 stall_count = stall_count + 1;
 
-            if (dut.ex_redirect)
+            if (dut.ex_taken)
                 redirect_count = redirect_count + 1;
 
-            if (o_dmem_wr_en)
+            if (o_dmem_valid && o_dmem_wr_en && !i_dmem_stall)
                 store_count = store_count + 1;
 
             if (!$isunknown(o_imem_addr) && (o_imem_addr[1:0] !== 2'b00)) begin
@@ -127,7 +137,7 @@ module riscv_core_TB;
                 $error("IMEM address is not word aligned: %08h", o_imem_addr);
             end
 
-            if (o_dmem_wr_en === 1'b1) begin
+            if (o_dmem_valid === 1'b1 && o_dmem_wr_en === 1'b1) begin
                 if ($isunknown({o_dmem_addr, o_dmem_wr_data, o_dmem_byt_en})) begin
                     protocol_errors = protocol_errors + 1;
                     $error("Unknown/X on active DMEM write interface");
@@ -143,7 +153,7 @@ module riscv_core_TB;
                 endcase
             end
         end else begin
-            if (o_dmem_wr_en === 1'b1) begin
+            if (o_dmem_valid === 1'b1 && o_dmem_wr_en === 1'b1) begin
                 protocol_errors = protocol_errors + 1;
                 $error("DMEM write asserted during reset");
             end
@@ -337,6 +347,7 @@ module riscv_core_TB;
             @(negedge i_clk);
 
             clear_memories();
+            i_dmem_stall = 1'b0;
             stall_count    = 0;
             redirect_count = 0;
             store_count    = 0;
@@ -956,6 +967,60 @@ module riscv_core_TB;
     // store data, and sustained pipeline throughput.
     // ========================================================================
 
+
+    task automatic test_cache_stall_backpressure;
+        int pc;
+        logic [31:0] held_addr;
+        logic held_write;
+        logic [31:0] held_data;
+        logic [3:0] held_be;
+        begin
+            begin_program("Cache-miss backpressure and pipeline freeze");
+
+            dmem[32'h100 >> 2] = 32'd41;
+
+            pc = 0;
+            emit(rv_addi(5'd1, 5'd0, 32'h100), pc);
+            emit(rv_lw  (5'd2, 5'd1, 0), pc);
+            emit(rv_addi(5'd3, 5'd2, 1), pc);
+            emit_end(pc, 13);
+
+            release_reset();
+
+            while (!(o_dmem_valid && !o_dmem_wr_en))
+                @(negedge i_clk);
+
+            held_addr  = o_dmem_addr;
+            held_write = o_dmem_wr_en;
+            held_data  = o_dmem_wr_data;
+            held_be    = o_dmem_byt_en;
+
+            i_dmem_stall = 1'b1;
+
+            repeat (3) begin
+                @(posedge i_clk);
+                #1;
+
+                expect_true(
+                    o_dmem_valid &&
+                    o_dmem_addr == held_addr &&
+                    o_dmem_wr_en == held_write &&
+                    o_dmem_wr_data == held_data &&
+                    o_dmem_byt_en == held_be,
+                    "Cache stall holds memory request stable"
+                );
+            end
+
+            @(negedge i_clk);
+            i_dmem_stall = 1'b0;
+
+            wait_for_signature(32'd13, 250, "Cache-stall program");
+
+            expect_reg(2, 32'd41, "Load survives cache stall");
+            expect_reg(3, 32'd42, "Dependent instruction resumes after cache stall");
+        end
+    endtask
+
     task automatic test_random_rtype_stress;
         int pc;
         int i;
@@ -1040,6 +1105,7 @@ module riscv_core_TB;
         test_backward_branch_loop();
         test_jumps();
         test_illegal_instructions();
+        test_cache_stall_backpressure();
         test_random_rtype_stress();
 
         @(negedge i_clk);

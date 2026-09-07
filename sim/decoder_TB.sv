@@ -15,6 +15,8 @@ module decoder_TB;
     logic        i_valid;
     logic [31:0] i_pc;
     logic [31:0] i_instr;
+    logic        i_pred_taken;
+    logic [31:0] i_pred_target;
 
     logic        i_stall;
     logic        i_flush;
@@ -50,6 +52,8 @@ module decoder_TB;
     logic        o_illegal;
 
     logic [31:0] o_pc_plus_4;
+    logic        o_pred_taken;
+    logic [31:0] o_pred_target;
 
 
     // ------------------------------------------------------------------------
@@ -62,6 +66,8 @@ module decoder_TB;
         .i_valid        (i_valid),
         .i_pc           (i_pc),
         .i_instr        (i_instr),
+        .i_pred_taken   (i_pred_taken),
+        .i_pred_target  (i_pred_target),
 
         .i_stall        (i_stall),
         .i_flush        (i_flush),
@@ -85,7 +91,9 @@ module decoder_TB;
         .o_is_jump      (o_is_jump),
         .o_jalr         (o_jalr),
         .o_illegal      (o_illegal),
-        .o_pc_plus_4    (o_pc_plus_4)
+        .o_pc_plus_4    (o_pc_plus_4),
+        .o_pred_taken   (o_pred_taken),
+        .o_pred_target  (o_pred_target)
     );
 
 
@@ -141,6 +149,8 @@ module decoder_TB;
         logic        is_jump;
         logic        jalr;
         logic        illegal;
+        logic        pred_taken;
+        logic [31:0] pred_target;
     } expected_t;
 
 
@@ -298,6 +308,8 @@ module decoder_TB;
         e.is_jump = 1'b0;
         e.jalr    = 1'b0;
         e.illegal = 1'b0;
+        e.pred_taken  = 1'b0;
+        e.pred_target = 32'd0;
 
         return e;
     endfunction
@@ -437,6 +449,18 @@ module decoder_TB;
             failed = 1'b1;
         end
 
+        if (o_pred_taken !== e.pred_taken) begin
+            $error("%s: o_pred_taken expected=%b got=%b",
+                   test_name, e.pred_taken, o_pred_taken);
+            failed = 1'b1;
+        end
+
+        if (o_pred_target !== e.pred_target) begin
+            $error("%s: o_pred_target expected=%h got=%h",
+                   test_name, e.pred_target, o_pred_target);
+            failed = 1'b1;
+        end
+
         if (failed) begin
             tests_failed++;
             $display("[FAIL] %s", test_name);
@@ -461,8 +485,10 @@ module decoder_TB;
         @(negedge i_clk);
 
         i_valid = 1'b1;
-        i_instr = instr;
-        i_pc    = pc;
+        i_instr       = instr;
+        i_pc          = pc;
+        i_pred_taken  = expected.pred_taken;
+        i_pred_target = expected.pred_target;
 
         i_stall = 1'b0;
         i_flush = 1'b0;
@@ -673,7 +699,9 @@ module decoder_TB;
 
         i_valid = 1'b1;
         i_instr = instr;
-        i_pc    = 32'h0000_8000;
+        i_pc          = 32'h0000_8000;
+        i_pred_taken  = 1'b0;
+        i_pred_target = 32'd0;
 
         i_stall = 1'b0;
         i_flush = 1'b0;
@@ -755,7 +783,9 @@ module decoder_TB;
 
         i_valid = 1'b0;
         i_instr = instr;
-        i_pc    = 32'h1234_5678;
+        i_pc          = 32'h1234_5678;
+        i_pred_taken  = 1'b0;
+        i_pred_target = 32'd0;
 
         i_stall = 1'b0;
         i_flush = 1'b0;
@@ -807,7 +837,9 @@ module decoder_TB;
         i_stall = 1'b1;
         i_valid = 1'b1;
         i_instr = 32'hFFFF_FFFF;
-        i_pc    = 32'hDEAD_BEEF;
+        i_pc          = 32'hDEAD_BEEF;
+        i_pred_taken  = 1'b1;
+        i_pred_target = 32'hCAFE_BABE;
 
         @(posedge i_clk);
         #1;
@@ -841,8 +873,12 @@ module decoder_TB;
         if (o_is_jump !== 1'b0) failed = 1'b1;
         if (o_jalr    !== 1'b0) failed = 1'b1;
         if (o_illegal !== 1'b0) failed = 1'b1;
+        if (o_pred_taken !== 1'b0) failed = 1'b1;
+        if (o_pred_target !== 32'd0) failed = 1'b1;
 
         if (o_pc_plus_4 !== 32'd0) failed = 1'b1;
+        if (o_pred_taken !== 1'b0) failed = 1'b1;
+        if (o_pred_target !== 32'd0) failed = 1'b1;
 
         if (failed) begin
             tests_failed++;
@@ -890,6 +926,8 @@ module decoder_TB;
         logic        original_jalr;
         logic        original_illegal;
         logic        original_valid;
+        logic        original_pred_taken;
+        logic [31:0] original_pred_target;
 
         bit failed;
 
@@ -919,6 +957,8 @@ module decoder_TB;
         original_is_jump    = o_is_jump;
         original_jalr       = o_jalr;
         original_illegal    = o_illegal;
+        original_pred_taken = o_pred_taken;
+        original_pred_target = o_pred_target;
 
         // Present an entirely different instruction while stalled.
         @(negedge i_clk);
@@ -927,7 +967,9 @@ module decoder_TB;
         i_flush = 1'b0;
 
         i_valid = 1'b1;
-        i_pc    = 32'hABCD_0000;
+        i_pc          = 32'hABCD_0000;
+        i_pred_taken  = 1'b1;
+        i_pred_target = 32'h1234_0000;
 
         i_instr = make_r(
             OP_ALU,
@@ -969,6 +1011,8 @@ module decoder_TB;
         if (o_is_jump   !== original_is_jump)   failed = 1'b1;
         if (o_jalr      !== original_jalr)      failed = 1'b1;
         if (o_illegal   !== original_illegal)   failed = 1'b1;
+        if (o_pred_taken !== original_pred_taken) failed = 1'b1;
+        if (o_pred_target !== original_pred_target) failed = 1'b1;
 
         if (failed) begin
             tests_failed++;
@@ -1041,6 +1085,8 @@ module decoder_TB;
         if (o_is_branch !== 1'b0) failed = 1'b1;
         if (o_is_jump   !== 1'b0) failed = 1'b1;
         if (o_illegal   !== 1'b0) failed = 1'b1;
+        if (o_pred_taken !== 1'b0) failed = 1'b1;
+        if (o_pred_target !== 32'd0) failed = 1'b1;
 
         // A flushed bubble should not retain JALR control either.
         if (o_jalr !== 1'b0) begin
@@ -1088,6 +1134,8 @@ module decoder_TB;
         if (o_is_branch !== 1'b0) failed = 1'b1;
         if (o_is_jump   !== 1'b0) failed = 1'b1;
         if (o_illegal   !== 1'b0) failed = 1'b1;
+        if (o_pred_taken !== 1'b0) failed = 1'b1;
+        if (o_pred_target !== 32'd0) failed = 1'b1;
 
         if (failed) begin
             tests_failed++;
@@ -1105,6 +1153,36 @@ module decoder_TB;
     endtask
 
 
+
+    task automatic test_prediction_metadata;
+        logic [31:0] instr;
+        expected_t e;
+
+        instr = make_b(
+            OP_BRANCH,
+            F3_BEQ,
+            5'd1,
+            5'd2,
+            13'd16
+        );
+
+        e = expected_default(instr, 32'h0000_A000);
+        e.imm               = 32'd16;
+        e.alu_inp_1         = 1'b1;
+        e.is_branch         = 1'b1;
+        e.check_branch_type = 1'b1;
+        e.branch_type       = BEQ;
+        e.pred_taken        = 1'b1;
+        e.pred_target       = 32'h0000_A010;
+
+        run_test(
+            "Prediction metadata passes through ID/EX",
+            instr,
+            32'h0000_A000,
+            e
+        );
+    endtask
+
     // ========================================================================
     // Main test sequence
     // ========================================================================
@@ -1117,6 +1195,8 @@ module decoder_TB;
         i_valid = 1'b0;
         i_pc    = 32'd0;
         i_instr = 32'd0;
+        i_pred_taken = 1'b0;
+        i_pred_target = 32'd0;
         i_stall = 1'b0;
         i_flush = 1'b0;
 
@@ -1731,6 +1811,8 @@ module decoder_TB;
         // FLUSH > STALL priority
         // --------------------------------------------------------------------
         test_flush_over_stall();
+
+        test_prediction_metadata();
 
 
         // --------------------------------------------------------------------

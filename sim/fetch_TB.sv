@@ -15,6 +15,8 @@ module fetch_TB;
     logic        i_stall;
     logic        i_redirect;
     logic [31:0] i_target;
+    logic        i_pred_taken;
+    logic [31:0] i_pred_target;
     logic [31:0] i_imem_data;
 
 
@@ -26,6 +28,8 @@ module fetch_TB;
     logic        o_valid;
     logic [31:0] o_pc;
     logic [31:0] o_instr;
+    logic        o_pred_taken;
+    logic [31:0] o_pred_target;
 
 
     // ========================================================================
@@ -38,12 +42,16 @@ module fetch_TB;
         .i_stall        (i_stall),
         .i_redirect     (i_redirect),
         .i_target       (i_target),
+        .i_pred_taken   (i_pred_taken),
+        .i_pred_target  (i_pred_target),
         .i_imem_data    (i_imem_data),
 
         .o_imem_addr    (o_imem_addr),
         .o_valid        (o_valid),
         .o_pc           (o_pc),
-        .o_instr        (o_instr)
+        .o_instr        (o_instr),
+        .o_pred_taken   (o_pred_taken),
+        .o_pred_target  (o_pred_target)
     );
 
 
@@ -117,8 +125,10 @@ module fetch_TB;
 
         i_rst      = 1'b0;
         i_stall    = 1'b0;
-        i_redirect = 1'b0;
-        i_target   = 32'd0;
+        i_redirect   = 1'b0;
+        i_target     = 32'd0;
+        i_pred_taken = 1'b0;
+        i_pred_target = 32'd0;
 
     endtask
 
@@ -140,8 +150,10 @@ module fetch_TB;
 
         i_rst      = 1'b1;
         i_stall    = 1'b0;
-        i_redirect = 1'b0;
-        i_target   = 32'd0;
+        i_redirect   = 1'b0;
+        i_target     = 32'd0;
+        i_pred_taken = 1'b0;
+        i_pred_target = 32'd0;
 
         @(posedge i_clk);
         #1;
@@ -288,7 +300,9 @@ module fetch_TB;
         i_rst      = 1'b1;
         i_stall    = 1'b1;
         i_redirect = 1'b1;
-        i_target   = 32'hDEAD_BEEF;
+        i_target      = 32'hDEAD_BEEF;
+        i_pred_taken  = 1'b1;
+        i_pred_target = 32'h1234_5678;
 
         @(posedge i_clk);
         #1;
@@ -324,7 +338,9 @@ module fetch_TB;
 
         i_rst      = 1'b0;
         i_stall    = 1'b0;
-        i_redirect = 1'b0;
+        i_redirect   = 1'b0;
+        i_pred_taken = 1'b0;
+        i_pred_target = 32'd0;
 
     endtask
 
@@ -1310,6 +1326,142 @@ module fetch_TB;
     endtask
 
 
+
+    task automatic check_prediction(
+        input string       test_name,
+        input logic        expected_taken,
+        input logic [31:0] expected_target
+    );
+        bit failed;
+        failed = 1'b0;
+        tests_run++;
+
+        if (o_pred_taken !== expected_taken) begin
+            $error(
+                "%s: o_pred_taken expected=%b got=%b",
+                test_name,
+                expected_taken,
+                o_pred_taken
+            );
+            failed = 1'b1;
+        end
+
+        if (o_pred_target !== expected_target) begin
+            $error(
+                "%s: o_pred_target expected=%h got=%h",
+                test_name,
+                expected_target,
+                o_pred_target
+            );
+            failed = 1'b1;
+        end
+
+        if (failed) begin
+            tests_failed++;
+            $display("[FAIL] %s", test_name);
+        end
+        else begin
+            $display("[PASS] %s", test_name);
+        end
+    endtask
+
+    task automatic test_prediction;
+        logic [31:0] source_pc;
+        logic [31:0] target_pc;
+
+        quiet_reset();
+
+        source_pc = RESET_VECTOR;
+        target_pc = 32'h0000_0100;
+
+        i_pred_taken  = 1'b1;
+        i_pred_target = target_pc;
+
+        @(posedge i_clk);
+        #1;
+
+        check_state(
+            "Prediction redirects next fetch",
+            1'b1,
+            target_pc,
+            source_pc,
+            imem_word(source_pc),
+            1'b1
+        );
+
+        check_prediction(
+            "Prediction metadata follows fetched instruction",
+            1'b1,
+            target_pc
+        );
+
+        @(negedge i_clk);
+        i_pred_taken  = 1'b0;
+        i_pred_target = 32'd0;
+
+        @(posedge i_clk);
+        #1;
+
+        check_state(
+            "Fetch proceeds sequentially from predicted target",
+            1'b1,
+            target_pc + 32'd4,
+            target_pc,
+            imem_word(target_pc),
+            1'b1
+        );
+
+        check_prediction(
+            "Non-taken prediction metadata",
+            1'b0,
+            32'd0
+        );
+    endtask
+
+    task automatic test_redirect_over_prediction;
+        quiet_reset();
+
+        i_pred_taken  = 1'b1;
+        i_pred_target = 32'h0000_0200;
+        i_redirect    = 1'b1;
+        i_target      = 32'h0000_0080;
+
+        @(posedge i_clk);
+        #1;
+
+        check_state(
+            "Redirect overrides prediction",
+            1'b0,
+            32'h0000_0080,
+            RESET_VECTOR,
+            32'd0,
+            1'b0
+        );
+
+        check_prediction(
+            "Redirect clears prediction metadata",
+            1'b0,
+            32'd0
+        );
+
+        @(negedge i_clk);
+        i_redirect    = 1'b0;
+        i_pred_taken  = 1'b0;
+        i_pred_target = 32'd0;
+
+        @(posedge i_clk);
+        #1;
+
+        check_state(
+            "Fetch resumes at recovery target",
+            1'b1,
+            32'h0000_0084,
+            32'h0000_0080,
+            imem_word(32'h0000_0080),
+            1'b1
+        );
+    endtask
+
     // ========================================================================
     // Main test sequence
     // ========================================================================
@@ -1362,6 +1514,10 @@ module fetch_TB;
         test_stall_after_redirect();
 
         test_target_ignored();
+
+        test_prediction();
+
+        test_redirect_over_prediction();
 
 
         // --------------------------------------------------------------------

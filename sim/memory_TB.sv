@@ -30,12 +30,14 @@ module memory_TB;
     logic           i_reg_write;
     t_wb_src        i_wb_src;
     logic           i_illegal;
+    logic [31:0]    i_dmem_rd_data;
 
 
     // ========================================================================
     // DUT outputs
     // ========================================================================
 
+    logic           o_dmem_valid;
     logic [31:0]    o_dmem_addr;
     logic [31:0]    o_dmem_wr_data;
     logic           o_dmem_wr_en;
@@ -45,6 +47,7 @@ module memory_TB;
     logic [31:0]    o_wb_pc;
     logic [4:0]     o_wb_rd;
     logic [31:0]    o_wb_alu_res;
+    logic [31:0]    o_wb_mem_data;
     logic           o_wb_wr_en;
     t_wb_src        o_wb_src;
     t_mem_types     o_wb_mem_type;
@@ -76,15 +79,18 @@ module memory_TB;
         .i_wb_src       (i_wb_src),
         .i_illegal      (i_illegal),
 
+        .o_dmem_valid   (o_dmem_valid),
         .o_dmem_addr    (o_dmem_addr),
         .o_dmem_wr_data (o_dmem_wr_data),
         .o_dmem_wr_en   (o_dmem_wr_en),
         .o_dmem_byt_en  (o_dmem_byt_en),
+        .i_dmem_rd_data (i_dmem_rd_data),
 
         .o_wb_valid     (o_wb_valid),
         .o_wb_pc        (o_wb_pc),
         .o_wb_rd        (o_wb_rd),
         .o_wb_alu_res   (o_wb_alu_res),
+        .o_wb_mem_data  (o_wb_mem_data),
         .o_wb_wr_en     (o_wb_wr_en),
         .o_wb_src       (o_wb_src),
         .o_wb_mem_type  (o_wb_mem_type),
@@ -121,6 +127,7 @@ module memory_TB;
         logic [31:0]    pc;
         logic [4:0]     rd;
         logic [31:0]    alu_res;
+        logic [31:0]    mem_data;
 
         logic           wr_en;
         t_wb_src        wb_src;
@@ -154,6 +161,7 @@ module memory_TB;
         i_reg_write     = 1'b0;
         i_wb_src        = WR_ALU_RES;
         i_illegal       = 1'b0;
+        i_dmem_rd_data  = 32'd0;
 
     endtask
 
@@ -170,6 +178,7 @@ module memory_TB;
         e.pc           = 32'd0;
         e.rd           = 5'd0;
         e.alu_res      = 32'd0;
+        e.mem_data     = 32'd0;
 
         e.wr_en        = 1'b0;
         e.wb_src       = WR_ALU_RES;
@@ -218,6 +227,21 @@ module memory_TB;
         bit failed;
 
         failed = 1'b0;
+
+        if (o_dmem_valid !== (
+            i_valid &&
+            !i_illegal &&
+            (i_mem_read || i_mem_write) &&
+            !i_flush &&
+            !i_rst
+        )) begin
+            $error(
+                "%s: o_dmem_valid unexpected value %b",
+                test_name,
+                o_dmem_valid
+            );
+            failed = 1'b1;
+        end
 
         if (o_dmem_addr !== expected_addr) begin
             $error(
@@ -333,6 +357,17 @@ module memory_TB;
             failed = 1'b1;
         end
 
+        if (o_wb_mem_data !== e.mem_data) begin
+            $error(
+                "%s: o_wb_mem_data expected=%h got=%h",
+                test_name,
+                e.mem_data,
+                o_wb_mem_data
+            );
+
+            failed = 1'b1;
+        end
+
 
         if (o_wb_wr_en !== e.wr_en) begin
             $error(
@@ -415,6 +450,7 @@ module memory_TB;
 
         i_reg_write     = 1'b1;
         i_illegal       = 1'b0;
+        i_dmem_rd_data  = 32'd0;
 
 
         #1;
@@ -740,11 +776,11 @@ module memory_TB;
         #1;
 
         check_dmem(
-            "Stall suppresses DMEM write",
+            "Stall preserves active DMEM store request",
             32'h4000_000C,
-            32'h0000_0000,
-            1'b0,
-            4'b0000
+            32'h4444_4444,
+            1'b1,
+            4'b1111
         );
 
 
@@ -1426,6 +1462,55 @@ module memory_TB;
     // Main
     // ========================================================================
 
+
+    task automatic test_load_data_capture;
+
+        expected_wb_t e;
+
+        @(negedge i_clk);
+
+        default_inputs();
+
+        i_valid        = 1'b1;
+        i_pc           = 32'h0000_A000;
+        i_rd           = 5'd19;
+        i_alu_result   = 32'h0000_0102;
+        i_mem_read     = 1'b1;
+        i_mem_type     = U_LOAD_BYTE;
+        i_reg_write    = 1'b1;
+        i_wb_src       = WR_READ_RES;
+        i_dmem_rd_data = 32'hA1B2_C3D4;
+
+        #1;
+
+        check_dmem(
+            "Load asserts cache request",
+            32'h0000_0102,
+            32'd0,
+            1'b0,
+            4'b0000
+        );
+
+        @(posedge i_clk);
+        #1;
+
+        e = make_expected_wb();
+        e.valid    = 1'b1;
+        e.pc       = 32'h0000_A000;
+        e.rd       = 5'd19;
+        e.alu_res  = 32'h0000_0102;
+        e.mem_data = 32'hA1B2_C3D4;
+        e.wr_en    = 1'b1;
+        e.wb_src   = WR_READ_RES;
+        e.mem_type = U_LOAD_BYTE;
+
+        check_wb(
+            "Load data captured into MEM/WB",
+            e
+        );
+
+    endtask
+
     initial begin
 
         tests_run    = 0;
@@ -1465,6 +1550,7 @@ module memory_TB;
         test_wb_sources();
 
         test_load_types();
+        test_load_data_capture();
 
         test_wb_gating();
 

@@ -17,7 +17,8 @@ module hazard_unit_TB;
     logic [4:0]     i_ex_rs2;
     logic [4:0]     i_ex_rd;
     logic           i_ex_mem_read;
-    logic           i_ex_redirect;
+    logic           i_ex_mispredict;
+    logic           i_cache_stall;
 
     // Memory stage
     logic [4:0]     i_mem_rd;
@@ -36,6 +37,8 @@ module hazard_unit_TB;
 
     logic           o_fetch_stall;
     logic           o_decode_stall;
+    logic           o_execute_stall;
+    logic           o_memory_stall;
     logic           o_decode_flush;
     logic           o_execute_flush;
 
@@ -59,19 +62,22 @@ module hazard_unit_TB;
         .i_ex_rs2          (i_ex_rs2),
         .i_ex_rd           (i_ex_rd),
         .i_ex_mem_read     (i_ex_mem_read),
-        .i_ex_redirect     (i_ex_redirect),
+        .i_ex_mispredict     (i_ex_mispredict),
 
         .i_mem_rd          (i_mem_rd),
         .i_mem_reg_wr      (i_mem_reg_wr),
 
         .i_wb_rd           (i_wb_rd),
         .i_wb_reg_wr       (i_wb_reg_wr),
+        .i_cache_stall     (i_cache_stall),
 
         .o_forward_op_a    (o_forward_op_a),
         .o_forward_op_b    (o_forward_op_b),
 
         .o_fetch_stall     (o_fetch_stall),
         .o_decode_stall    (o_decode_stall),
+        .o_execute_stall   (o_execute_stall),
+        .o_memory_stall    (o_memory_stall),
         .o_decode_flush    (o_decode_flush),
         .o_execute_flush   (o_execute_flush)
     );
@@ -89,7 +95,8 @@ module hazard_unit_TB;
             i_ex_rs2       = 5'd0;
             i_ex_rd        = 5'd0;
             i_ex_mem_read  = 1'b0;
-            i_ex_redirect  = 1'b0;
+            i_ex_mispredict  = 1'b0;
+            i_cache_stall    = 1'b0;
 
             i_mem_rd       = 5'd0;
             i_mem_reg_wr   = 1'b0;
@@ -111,6 +118,8 @@ module hazard_unit_TB;
 
         output logic        exp_fetch_stall,
         output logic        exp_decode_stall,
+        output logic        exp_execute_stall,
+        output logic        exp_memory_stall,
         output logic        exp_decode_flush,
         output logic        exp_execute_flush
     );
@@ -176,15 +185,25 @@ module hazard_unit_TB;
             // -------------------------------------------------------------
             // Pipeline control
             //
-            // Redirect has priority over load-use hazard.
+            // Mispredict has priority over load-use hazard.
             // -------------------------------------------------------------
 
             exp_fetch_stall   = 1'b0;
             exp_decode_stall  = 1'b0;
+            exp_execute_stall = 1'b0;
+            exp_memory_stall  = 1'b0;
             exp_decode_flush  = 1'b0;
             exp_execute_flush = 1'b0;
 
-            if (i_ex_redirect) begin
+            if (i_cache_stall) begin
+
+                exp_fetch_stall   = 1'b1;
+                exp_decode_stall  = 1'b1;
+                exp_execute_stall = 1'b1;
+                exp_memory_stall  = 1'b1;
+
+            end
+            else if (i_ex_mispredict) begin
 
                 exp_decode_flush = 1'b1;
 
@@ -214,6 +233,8 @@ module hazard_unit_TB;
 
         logic exp_fetch_stall;
         logic exp_decode_stall;
+        logic exp_execute_stall;
+        logic exp_memory_stall;
         logic exp_decode_flush;
         logic exp_execute_flush;
 
@@ -225,6 +246,8 @@ module hazard_unit_TB;
 
                 exp_fetch_stall,
                 exp_decode_stall,
+                exp_execute_stall,
+                exp_memory_stall,
                 exp_decode_flush,
                 exp_execute_flush
             );
@@ -239,6 +262,8 @@ module hazard_unit_TB;
                 (o_forward_op_b  === exp_forward_b)     &&
                 (o_fetch_stall   === exp_fetch_stall)   &&
                 (o_decode_stall  === exp_decode_stall)  &&
+                (o_execute_stall === exp_execute_stall) &&
+                (o_memory_stall  === exp_memory_stall)  &&
                 (o_decode_flush  === exp_decode_flush)  &&
                 (o_execute_flush === exp_execute_flush)
             ) begin
@@ -275,12 +300,12 @@ module hazard_unit_TB;
                 );
 
                 $display(
-                    "  EX:  rs1=%0d rs2=%0d rd=%0d mem_read=%b redirect=%b",
+                    "  EX:  rs1=%0d rs2=%0d rd=%0d mem_read=%b mispredict=%b",
                     i_ex_rs1,
                     i_ex_rs2,
                     i_ex_rd,
                     i_ex_mem_read,
-                    i_ex_redirect
+                    i_ex_mispredict
                 );
 
                 $display(
@@ -860,10 +885,10 @@ module hazard_unit_TB;
     endtask
 
     // =========================================================================
-    // Test 10: Redirect handling
+    // Test 10: Mispredict handling
     // =========================================================================
 
-    task automatic test_redirect;
+    task automatic test_mispredict;
 
         begin
 
@@ -873,16 +898,16 @@ module hazard_unit_TB;
 
             clear_inputs();
 
-            i_ex_redirect = 1'b1;
+            i_ex_mispredict = 1'b1;
 
             check_outputs(
-                "Redirect flushes decode stage"
+                "Mispredict flushes decode stage"
             );
 
-            // Redirect with arbitrary registers
+            // Mispredict with arbitrary registers
             clear_inputs();
 
-            i_ex_redirect = 1'b1;
+            i_ex_mispredict = 1'b1;
 
             i_id_rs1 = 5'd2;
             i_id_rs2 = 5'd3;
@@ -892,7 +917,7 @@ module hazard_unit_TB;
             i_ex_rd  = 5'd6;
 
             check_outputs(
-                "Redirect unaffected by unrelated register state"
+                "Mispredict unaffected by unrelated register state"
             );
 
         end
@@ -900,10 +925,10 @@ module hazard_unit_TB;
     endtask
 
     // =========================================================================
-    // Test 11: Redirect priority over load-use stall
+    // Test 11: Mispredict priority over load-use stall
     // =========================================================================
 
-    task automatic test_redirect_priority;
+    task automatic test_mispredict_priority;
 
         begin
 
@@ -919,11 +944,11 @@ module hazard_unit_TB;
 
             i_id_rs1      = 5'd5;
 
-            // Simultaneously redirect
-            i_ex_redirect = 1'b1;
+            // Simultaneously mispredict
+            i_ex_mispredict = 1'b1;
 
             check_outputs(
-                "Redirect has priority over load-use hazard"
+                "Mispredict has priority over load-use hazard"
             );
 
             // Match rs2 as well
@@ -935,10 +960,10 @@ module hazard_unit_TB;
             i_id_rs1      = 5'd17;
             i_id_rs2      = 5'd17;
 
-            i_ex_redirect = 1'b1;
+            i_ex_mispredict = 1'b1;
 
             check_outputs(
-                "Redirect priority when both source registers have load-use hazard"
+                "Mispredict priority when both source registers have load-use hazard"
             );
 
         end
@@ -973,7 +998,7 @@ module hazard_unit_TB;
                 "Forwarding logic remains valid during load-use stall"
             );
 
-            // Simultaneous WB forwarding + redirect
+            // Simultaneous WB forwarding + mispredict
             clear_inputs();
 
             i_ex_rs2 = 5'd22;
@@ -981,13 +1006,13 @@ module hazard_unit_TB;
             i_wb_rd     = 5'd22;
             i_wb_reg_wr = 1'b1;
 
-            i_ex_redirect = 1'b1;
+            i_ex_mispredict = 1'b1;
 
             check_outputs(
-                "Forwarding logic remains valid during redirect"
+                "Forwarding logic remains valid during mispredict"
             );
 
-            // MEM + WB forwarding, load-use, and redirect all active
+            // MEM + WB forwarding, load-use, and mispredict all active
             clear_inputs();
 
             i_ex_rs1 = 5'd5;
@@ -1004,10 +1029,10 @@ module hazard_unit_TB;
 
             i_id_rs1 = 5'd10;
 
-            i_ex_redirect = 1'b1;
+            i_ex_mispredict = 1'b1;
 
             check_outputs(
-                "Forwarding + load-use + redirect simultaneous"
+                "Forwarding + load-use + mispredict simultaneous"
             );
 
         end
@@ -1192,7 +1217,7 @@ module hazard_unit_TB;
                 i_ex_rd        = $urandom_range(0, 31);
 
                 i_ex_mem_read  = $urandom_range(0, 1);
-                i_ex_redirect  = $urandom_range(0, 1);
+                i_ex_mispredict  = $urandom_range(0, 1);
 
                 i_mem_rd       = $urandom_range(0, 31);
                 i_mem_reg_wr   = $urandom_range(0, 1);
@@ -1257,13 +1282,13 @@ module hazard_unit_TB;
                 "Combination sequence step 4: add load-use hazard"
             );
 
-            i_ex_redirect = 1'b1;
+            i_ex_mispredict = 1'b1;
 
             check_outputs(
-                "Combination sequence step 5: redirect overrides stall"
+                "Combination sequence step 5: mispredict overrides stall"
             );
 
-            i_ex_redirect = 1'b0;
+            i_ex_mispredict = 1'b0;
             i_ex_mem_read = 1'b0;
             i_wb_reg_wr   = 1'b0;
 
@@ -1272,6 +1297,36 @@ module hazard_unit_TB;
             );
 
         end
+
+    endtask
+
+
+    task automatic test_cache_stall;
+
+        $display("\n--- Cache stall tests ---");
+
+        clear_inputs();
+        i_cache_stall = 1'b1;
+        check_outputs("Cache miss stalls entire pipeline");
+
+        clear_inputs();
+        i_cache_stall   = 1'b1;
+        i_ex_mispredict = 1'b1;
+        check_outputs("Cache stall has priority over mispredict");
+
+        clear_inputs();
+        i_cache_stall  = 1'b1;
+        i_ex_mem_read  = 1'b1;
+        i_ex_rd        = 5'd9;
+        i_id_rs1       = 5'd9;
+        check_outputs("Cache stall has priority over load-use");
+
+        clear_inputs();
+        i_cache_stall = 1'b1;
+        i_mem_reg_wr  = 1'b1;
+        i_mem_rd      = 5'd7;
+        i_ex_rs1      = 5'd7;
+        check_outputs("Forwarding selection remains valid during cache stall");
 
     endtask
 
@@ -1308,8 +1363,9 @@ module hazard_unit_TB;
         test_load_use();
         test_load_use_exclusions();
 
-        test_redirect();
-        test_redirect_priority();
+        test_mispredict();
+        test_mispredict_priority();
+        test_cache_stall();
 
         test_forwarding_with_stalls();
 
