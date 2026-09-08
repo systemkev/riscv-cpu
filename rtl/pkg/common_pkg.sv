@@ -1,3 +1,16 @@
+// ============================================================================
+// File Name   : common_pkg.sv
+// Author      : Kevin Toledo Fernandez / GitHub: systemkev
+// Date        : 2026-06-10
+// Project     : RISC-V 32-bit Processor
+// Description : Centralized package definition for the RV32I processor. 
+//               Contains globally accessible typed enumerations (ALU operations, 
+//               branch conditions, memory access sizes, register names) and 
+//               constant parameters for instruction opcodes and function fields. 
+//
+// License     : MIT
+// ============================================================================
+
 package common_pkg;
     typedef enum logic [3:0] {
         ARITH_ADD,          // adds two 32 bit numbers
@@ -27,7 +40,7 @@ package common_pkg;
         WR_ALU_RES,
         WR_READ_RES,
         WR_PC_PLUS_4
-    } t_wr_to_reg;
+    } t_wb_src;
 
     typedef enum logic [2:0] {
         BEQ,
@@ -37,6 +50,12 @@ package common_pkg;
         BLTU,
         BGEU
     } t_branches;
+
+    typedef enum logic [1:0] {
+        NO_HAZ,
+        WB_FWD,
+        MEM_FWD
+    } t_forwarding;
 
     typedef enum logic [4:0] {
         reg_x0_zero,
@@ -114,5 +133,7 @@ package common_pkg;
         F3_BGE      = 3'b101,
         F3_BLTU     = 3'b110,
         F3_BGEU     = 3'b111;
+
+    localparam logic [31:0] RESET_VECTOR = 32'h0;
 
 endpackage
