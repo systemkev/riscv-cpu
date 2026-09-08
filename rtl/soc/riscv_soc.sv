@@ -15,8 +15,12 @@ module riscv_soc #(
     output logic o_uart_tx
 );
 
+    localparam logic [31:0] UART_BASE_ADDR =
+        32'h8000_0000;
+
     logic cpu_rst;
     logic loader_hold_reset;
+    logic loader_uart_owner;
 
     logic [7:0] uart_rx_data;
     logic       uart_rx_valid;
@@ -38,10 +42,16 @@ module riscv_soc #(
     logic [31:0] resp_addr;
     logic [31:0] resp_data;
 
-    logic       tx_byte_valid;
-    logic [7:0] tx_byte;
-    logic       tx_ready;
-    logic       tx_done;
+    logic       loader_tx_valid;
+    logic [7:0] loader_tx_data;
+
+    logic       mmio_tx_valid;
+    logic [7:0] mmio_tx_data;
+
+    logic       physical_tx_valid;
+    logic [7:0] physical_tx_data;
+    logic       physical_tx_ready;
+    logic       physical_tx_done;
 
     logic [31:0] imem_addr;
     logic [31:0] imem_data;
@@ -52,8 +62,25 @@ module riscv_soc #(
     logic        cpu_dmem_wr_en;
     logic [3:0]  cpu_dmem_byte_en;
     logic [31:0] cpu_dmem_rd_data;
-    logic        cpu_dmem_ready;
     logic        cpu_dmem_stall;
+
+    logic        ram_dmem_valid;
+    logic        ram_dmem_write;
+    logic [31:0] ram_dmem_addr;
+    logic [31:0] ram_dmem_wr_data;
+    logic [3:0]  ram_dmem_byte_en;
+    logic [31:0] ram_dmem_rd_data;
+    logic        ram_dmem_stall;
+
+    logic        uart_dmem_valid;
+    logic        uart_dmem_write;
+    logic [31:0] uart_dmem_addr;
+    logic [31:0] uart_dmem_wr_data;
+    logic [3:0]  uart_dmem_byte_en;
+    logic [31:0] uart_dmem_rd_data;
+    logic        uart_dmem_stall;
+
+    logic        cache_cpu_ready;
 
     logic        cache_mem_valid;
     logic        cache_mem_write;
@@ -71,6 +98,11 @@ module riscv_soc #(
         i_rst |
         loader_hold_reset;
 
+    assign loader_uart_owner =
+        loader_hold_reset |
+        resp_valid |
+        !resp_ready;
+
     uart_rx #(
         .CLK_HZ (CLK_HZ),
         .BAUD   (UART_BAUD)
@@ -85,8 +117,14 @@ module riscv_soc #(
     uart_packet_parser u_uart_packet_parser (
         .i_clk          (i_clk),
         .i_rst          (i_rst),
-        .i_byte_valid   (uart_rx_valid),
+
+        .i_byte_valid   (
+            uart_rx_valid &&
+            loader_hold_reset
+        ),
+
         .i_byte         (uart_rx_data),
+
         .o_packet_valid (packet_valid),
         .o_packet_error (packet_error),
         .o_cmd          (packet_cmd),
@@ -132,10 +170,24 @@ module riscv_soc #(
         .i_addr       (resp_addr),
         .i_data       (resp_data),
 
-        .i_tx_ready   (tx_ready),
-        .o_byte_valid (tx_byte_valid),
-        .o_byte       (tx_byte)
+        .i_tx_ready   (
+            physical_tx_ready &&
+            loader_uart_owner
+        ),
+
+        .o_byte_valid (loader_tx_valid),
+        .o_byte       (loader_tx_data)
     );
+
+    assign physical_tx_valid =
+        loader_uart_owner
+        ? loader_tx_valid
+        : mmio_tx_valid;
+
+    assign physical_tx_data =
+        loader_uart_owner
+        ? loader_tx_data
+        : mmio_tx_data;
 
     uart_tx #(
         .CLK_HZ (CLK_HZ),
@@ -144,12 +196,12 @@ module riscv_soc #(
         .i_clk   (i_clk),
         .i_rst   (i_rst),
 
-        .i_valid (tx_byte_valid),
-        .i_data  (tx_byte),
+        .i_valid (physical_tx_valid),
+        .i_data  (physical_tx_data),
 
-        .o_ready (tx_ready),
+        .o_ready (physical_tx_ready),
         .o_tx    (o_uart_tx),
-        .o_done  (tx_done)
+        .o_done  (physical_tx_done)
     );
 
     riscv_core u_core (
@@ -164,6 +216,7 @@ module riscv_soc #(
         .o_dmem_wr_data (cpu_dmem_wr_data),
         .o_dmem_wr_en   (cpu_dmem_wr_en),
         .o_dmem_byt_en  (cpu_dmem_byte_en),
+
         .i_dmem_data    (cpu_dmem_rd_data),
         .i_dmem_stall   (cpu_dmem_stall)
     );
@@ -182,6 +235,69 @@ module riscv_soc #(
         .i_loader_wr_data (loader_imem_wr_data)
     );
 
+    dmem_addr_decoder #(
+        .DMEM_DEPTH     (DMEM_DEPTH),
+        .UART_BASE_ADDR (UART_BASE_ADDR)
+    ) u_dmem_addr_decoder (
+        .i_cpu_valid     (cpu_dmem_valid),
+        .i_cpu_write     (cpu_dmem_wr_en),
+        .i_cpu_addr      (cpu_dmem_addr),
+        .i_cpu_wr_data   (cpu_dmem_wr_data),
+        .i_cpu_byte_en   (cpu_dmem_byte_en),
+
+        .o_ram_valid     (ram_dmem_valid),
+        .o_ram_write     (ram_dmem_write),
+        .o_ram_addr      (ram_dmem_addr),
+        .o_ram_wr_data   (ram_dmem_wr_data),
+        .o_ram_byte_en   (ram_dmem_byte_en),
+
+        .i_ram_rd_data   (ram_dmem_rd_data),
+        .i_ram_stall     (ram_dmem_stall),
+
+        .o_uart_valid    (uart_dmem_valid),
+        .o_uart_write    (uart_dmem_write),
+        .o_uart_addr     (uart_dmem_addr),
+        .o_uart_wr_data  (uart_dmem_wr_data),
+        .o_uart_byte_en  (uart_dmem_byte_en),
+
+        .i_uart_rd_data  (uart_dmem_rd_data),
+        .i_uart_stall    (uart_dmem_stall),
+
+        .o_cpu_rd_data   (cpu_dmem_rd_data),
+        .o_cpu_stall     (cpu_dmem_stall)
+    );
+
+    uart_mmio #(
+        .BASE_ADDR(UART_BASE_ADDR)
+    ) u_uart_mmio (
+        .i_clk           (i_clk),
+        .i_rst           (cpu_rst),
+
+        .i_req_valid     (uart_dmem_valid),
+        .i_req_write     (uart_dmem_write),
+        .i_req_addr      (uart_dmem_addr),
+        .i_req_wr_data   (uart_dmem_wr_data),
+        .i_req_byte_en   (uart_dmem_byte_en),
+
+        .o_req_rd_data   (uart_dmem_rd_data),
+        .o_req_stall     (uart_dmem_stall),
+
+        .i_uart_rx_valid (
+            uart_rx_valid &&
+            !loader_uart_owner
+        ),
+
+        .i_uart_rx_data  (uart_rx_data),
+
+        .o_uart_tx_valid (mmio_tx_valid),
+        .o_uart_tx_data  (mmio_tx_data),
+
+        .i_uart_tx_ready (
+            physical_tx_ready &&
+            !loader_uart_owner
+        )
+    );
+
     l1_dcache #(
         .LINES          (L1_LINES),
         .WORDS_PER_LINE (L1_WORDS_PER_LINE)
@@ -189,16 +305,16 @@ module riscv_soc #(
         .i_clk          (i_clk),
         .i_rst          (cpu_rst),
 
-        .i_cpu_valid    (cpu_dmem_valid),
-        .i_cpu_write    (cpu_dmem_wr_en),
+        .i_cpu_valid    (ram_dmem_valid),
+        .i_cpu_write    (ram_dmem_write),
         .i_cpu_uncached (1'b0),
-        .i_cpu_addr     (cpu_dmem_addr),
-        .i_cpu_wr_data  (cpu_dmem_wr_data),
-        .i_cpu_byte_en  (cpu_dmem_byte_en),
+        .i_cpu_addr     (ram_dmem_addr),
+        .i_cpu_wr_data  (ram_dmem_wr_data),
+        .i_cpu_byte_en  (ram_dmem_byte_en),
 
-        .o_cpu_rd_data  (cpu_dmem_rd_data),
-        .o_cpu_ready    (cpu_dmem_ready),
-        .o_cpu_stall    (cpu_dmem_stall),
+        .o_cpu_rd_data  (ram_dmem_rd_data),
+        .o_cpu_ready    (cache_cpu_ready),
+        .o_cpu_stall    (ram_dmem_stall),
 
         .o_mem_valid    (cache_mem_valid),
         .o_mem_write    (cache_mem_write),
@@ -244,10 +360,12 @@ module riscv_soc #(
         .INIT_FILE   (DMEM_INIT_FILE)
     ) u_dmem (
         .i_clk      (i_clk),
+
         .i_addr     (cache_mem_addr),
         .i_wr_data  (cache_mem_wr_data),
         .i_wr_en    (bram_wr_en),
         .i_byte_en  (cache_mem_byte_en),
+
         .o_rd_data  (bram_rd_data)
     );
 

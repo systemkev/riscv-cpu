@@ -74,117 +74,112 @@ module execute (
     output  logic [31:0]    o_target
 );
 
-logic [31:0]        alu_op_1;
-logic [31:0]        alu_op_2;
-logic [31:0]        alu_result;
-logic               alu_zero;
-logic               branch_taken;
+    (* max_fanout = 64 *) logic [31:0] alu_op_1;
+    (* max_fanout = 64 *) logic [31:0] alu_op_2;
+    logic [31:0]        alu_result;
+    logic               alu_zero;
+    logic               branch_taken;
 
-// Resolve data hazards and determine what rs1 and rs2 should be
-logic [31:0]        resolved_rs1;
-logic [31:0]        resolved_rs2;
+    // Resolve data hazards and determine what rs1 and rs2 should be
+    logic [31:0]        resolved_rs1;
+    logic [31:0]        resolved_rs2;
 
-always_comb begin 
-    // Forwarding mux for rs1 
-    case (i_forward_op_a)
-        NO_HAZ:     resolved_rs1 = i_rs1_val;
-        WB_FWD:     resolved_rs1 = i_wb_fwd_data;
-        MEM_FWD:    resolved_rs1 = i_mem_fwd_data;
-        default:    resolved_rs1 = i_rs1_val;
-    endcase 
+    always_comb begin 
+        // Forwarding mux for rs1 
+        case (i_forward_op_a)
+            NO_HAZ:     resolved_rs1 = i_rs1_val;
+            WB_FWD:     resolved_rs1 = i_wb_fwd_data;
+            MEM_FWD:    resolved_rs1 = i_mem_fwd_data;
+            default:    resolved_rs1 = i_rs1_val;
+        endcase 
 
-    // Forwarding mux for rs2
-    case (i_forward_op_b)
-        NO_HAZ:     resolved_rs2 = i_rs2_val;
-        WB_FWD:     resolved_rs2 = i_wb_fwd_data;
-        MEM_FWD:    resolved_rs2 = i_mem_fwd_data;
-        default:    resolved_rs2 = i_rs2_val;
-    endcase 
-end
+        // Forwarding mux for rs2
+        case (i_forward_op_b)
+            NO_HAZ:     resolved_rs2 = i_rs2_val;
+            WB_FWD:     resolved_rs2 = i_wb_fwd_data;
+            MEM_FWD:    resolved_rs2 = i_mem_fwd_data;
+            default:    resolved_rs2 = i_rs2_val;
+        endcase 
+    end
 
-// Operand selection
-always_comb begin
-    if (i_valid) begin
+    // Operand selection
+    always_comb begin
         alu_op_1 = (i_alu_inp_1 == 1'b0) ? resolved_rs1 : i_pc;
         alu_op_2 = (i_alu_inp_2 == 1'b0) ? resolved_rs2 : i_imm;
-    end else begin
-        alu_op_1 = 32'b0;
-        alu_op_2 = 32'b0;
     end
-end
 
-// Instantiate the ALU and pass in its arguments
-ALU alu_core (
-    .i_first_operand            (alu_op_1),
-    .i_second_operand           (alu_op_2),
-    .i_operation                (i_alu_op),
-    .o_result                   (alu_result),
-    .o_zero_flag                (alu_zero)
-);
+    // Instantiate the ALU and pass in its arguments
+    ALU alu_core (
+        .i_first_operand            (alu_op_1),
+        .i_second_operand           (alu_op_2),
+        .i_operation                (i_alu_op),
+        .o_result                   (alu_result),
+        .o_zero_flag                (alu_zero)
+    );
 
-// Branch comparator 
-always_comb begin
-    branch_taken = 1'b0;
-    case (i_branch_type)
-        BEQ:        branch_taken = (resolved_rs1 == resolved_rs2);
-        BNE:        branch_taken = (resolved_rs1 != resolved_rs2);
+    // Branch comparator 
+    always_comb begin
+        branch_taken = 1'b0;
+        case (i_branch_type)
+            BEQ:        branch_taken = (resolved_rs1 == resolved_rs2);
+            BNE:        branch_taken = (resolved_rs1 != resolved_rs2);
 
-        // Signed comparisons
-        BLT:        branch_taken = ($signed(resolved_rs1) < $signed(resolved_rs2));
-        BGE:        branch_taken = ($signed(resolved_rs1) >= $signed(resolved_rs2));
+            // Signed comparisons
+            BLT:        branch_taken = ($signed(resolved_rs1) < $signed(resolved_rs2));
+            BGE:        branch_taken = ($signed(resolved_rs1) >= $signed(resolved_rs2));
 
-        // Unsigned comparisons
-        BLTU:       branch_taken = (resolved_rs1 < resolved_rs2);
-        BGEU:       branch_taken = (resolved_rs1 >= resolved_rs2);
+            // Unsigned comparisons
+            BLTU:       branch_taken = (resolved_rs1 < resolved_rs2);
+            BGEU:       branch_taken = (resolved_rs1 >= resolved_rs2);
 
-        default:    branch_taken = 1'b0;
-    endcase 
-end
-
-// Drive the redirect signal
-assign o_redirect   = i_valid & (i_is_jump | (i_is_branch & branch_taken));
-assign o_target     = i_jalr ? (alu_result & 32'hFFFFFFFE) : alu_result;
-
-// Clocked pipeline register
-always_ff @(posedge i_clk) begin 
-    if (i_rst == 1'b1) begin 
-        o_valid             <= 1'b0;
-        o_pc                <= '0;
-        o_rd                <= '0;
-        o_alu_result        <= '0;
-        o_rs2_val           <= '0;
-        o_mem_read          <= '0;
-        o_mem_write         <= '0;
-        o_mem_type          <= S_LOAD_BYTE;
-        o_reg_write         <= '0;
-        o_wb_src            <= WR_ALU_RES;
-        o_illegal           <= '0;
-    end else if (i_flush == 1'b1) begin
-        // Inject NOP (Zero out write enables and valid flag)
-        o_valid         <= 1'b0;
-        o_pc            <= '0;
-        o_rd            <= '0;
-        o_alu_result    <= '0;
-        o_rs2_val       <= '0;
-        o_mem_read      <= 1'b0;
-        o_mem_write     <= 1'b0;
-        o_mem_type      <= S_LOAD_BYTE;
-        o_reg_write     <= 1'b0;
-        o_wb_src        <= WR_ALU_RES;
-        o_illegal       <= 1'b0;
-    end else if (i_stall == 1'b0) begin
-        // Normal operation
-        o_valid         <= i_valid;      
-        o_pc            <= i_pc;
-        o_rd            <= i_rd;
-        o_alu_result    <= alu_result;      // Pass the calculated math/address forward
-        o_rs2_val       <= resolved_rs2;    // Forwarded for STORE instructions
-        o_mem_read      <= i_mem_read;
-        o_mem_write     <= i_mem_write;
-        o_mem_type      <= i_mem_type;
-        o_reg_write     <= i_reg_write;
-        o_wb_src        <= i_wb_src;
-        o_illegal       <= i_illegal;
+            default:    branch_taken = 1'b0;
+        endcase 
     end
-end
+
+    // Drive the redirect signal
+    assign o_redirect   = i_valid & (i_is_jump | (i_is_branch & branch_taken));
+    assign o_target     = i_jalr ? (alu_result & 32'hFFFFFFFE) : alu_result;
+
+    // Clocked pipeline register
+    always_ff @(posedge i_clk) begin 
+        if (i_rst == 1'b1) begin 
+            o_valid             <= 1'b0;
+            o_pc                <= '0;
+            o_rd                <= '0;
+            o_alu_result        <= '0;
+            o_rs2_val           <= '0;
+            o_mem_read          <= '0;
+            o_mem_write         <= '0;
+            o_mem_type          <= S_LOAD_BYTE;
+            o_reg_write         <= '0;
+            o_wb_src            <= WR_ALU_RES;
+            o_illegal           <= '0;
+        end else if (i_flush == 1'b1) begin
+            // Inject NOP (Zero out write enables and valid flag)
+            o_valid         <= 1'b0;
+            o_pc            <= '0;
+            o_rd            <= '0;
+            o_alu_result    <= '0;
+            o_rs2_val       <= '0;
+            o_mem_read      <= 1'b0;
+            o_mem_write     <= 1'b0;
+            o_mem_type      <= S_LOAD_BYTE;
+            o_reg_write     <= 1'b0;
+            o_wb_src        <= WR_ALU_RES;
+            o_illegal       <= 1'b0;
+        end else if (i_stall == 1'b0) begin
+            // Normal operation
+            o_valid         <= i_valid;      
+            o_pc            <= i_pc;
+            o_rd            <= i_rd;
+            o_alu_result    <= alu_result;      // Pass the calculated math/address forward
+            o_rs2_val       <= resolved_rs2;    // Forwarded for STORE instructions
+            o_mem_read      <= i_mem_read;
+            o_mem_write     <= i_mem_write;
+            o_mem_type      <= i_mem_type;
+            o_reg_write     <= i_reg_write;
+            o_wb_src        <= i_wb_src;
+            o_illegal       <= i_illegal;
+        end
+    end
 endmodule
