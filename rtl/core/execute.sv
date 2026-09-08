@@ -58,7 +58,7 @@ module execute (
     output  logic           o_valid,
     output  logic [31:0]    o_pc,
     output  logic [4:0]     o_rd,
-    output  logic [31:0]    o_alu_result,   // memory address for load/store, ALU result for writeback
+    (* extract_enable = "yes" *) output  logic [31:0]    o_alu_result,   // memory address for load/store, ALU result for writeback
     output  logic [31:0]    o_rs2_val,      // store data forwarded to MEM
     output  logic           o_mem_read,
     output  logic           o_mem_write,
@@ -74,8 +74,10 @@ module execute (
     output  logic [31:0]    o_target
 );
 
-    (* max_fanout = 64 *) logic [31:0] alu_op_1;
-    (* max_fanout = 64 *) logic [31:0] alu_op_2;
+    (* direct_enable = "yes", max_fanout = 32 *) logic execute_ce;
+
+    logic [31:0]        alu_op_1;
+    logic [31:0]        alu_op_2;
     logic [31:0]        alu_result;
     logic               alu_zero;
     logic               branch_taken;
@@ -85,21 +87,10 @@ module execute (
     logic [31:0]        resolved_rs2;
 
     always_comb begin 
-        // Forwarding mux for rs1 
-        case (i_forward_op_a)
-            NO_HAZ:     resolved_rs1 = i_rs1_val;
-            WB_FWD:     resolved_rs1 = i_wb_fwd_data;
-            MEM_FWD:    resolved_rs1 = i_mem_fwd_data;
-            default:    resolved_rs1 = i_rs1_val;
-        endcase 
-
-        // Forwarding mux for rs2
-        case (i_forward_op_b)
-            NO_HAZ:     resolved_rs2 = i_rs2_val;
-            WB_FWD:     resolved_rs2 = i_wb_fwd_data;
-            MEM_FWD:    resolved_rs2 = i_mem_fwd_data;
-            default:    resolved_rs2 = i_rs2_val;
-        endcase 
+        // RAW dependencies are stalled for one cycle in the hazard unit.
+        // The register file already contains a same-cycle WB bypass.
+        resolved_rs1 = i_rs1_val;
+        resolved_rs2 = i_rs2_val;
     end
 
     // Operand selection
@@ -140,9 +131,11 @@ module execute (
     assign o_redirect   = i_valid & (i_is_jump | (i_is_branch & branch_taken));
     assign o_target     = i_jalr ? (alu_result & 32'hFFFFFFFE) : alu_result;
 
+    assign execute_ce = !i_stall;
+
     // Clocked pipeline register
     always_ff @(posedge i_clk) begin 
-        if (i_rst == 1'b1) begin 
+        if (i_rst == 1'b1 || i_flush == 1'b1) begin 
             o_valid             <= 1'b0;
             o_pc                <= '0;
             o_rd                <= '0;
@@ -154,20 +147,7 @@ module execute (
             o_reg_write         <= '0;
             o_wb_src            <= WR_ALU_RES;
             o_illegal           <= '0;
-        end else if (i_flush == 1'b1) begin
-            // Inject NOP (Zero out write enables and valid flag)
-            o_valid         <= 1'b0;
-            o_pc            <= '0;
-            o_rd            <= '0;
-            o_alu_result    <= '0;
-            o_rs2_val       <= '0;
-            o_mem_read      <= 1'b0;
-            o_mem_write     <= 1'b0;
-            o_mem_type      <= S_LOAD_BYTE;
-            o_reg_write     <= 1'b0;
-            o_wb_src        <= WR_ALU_RES;
-            o_illegal       <= 1'b0;
-        end else if (i_stall == 1'b0) begin
+        end else if (execute_ce) begin
             // Normal operation
             o_valid         <= i_valid;      
             o_pc            <= i_pc;
@@ -183,3 +163,4 @@ module execute (
         end
     end
 endmodule
+
