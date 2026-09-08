@@ -100,37 +100,16 @@ module riscv_core (
     logic [31:0] bp_resolve_pc_q;
     logic        bp_resolve_is_branch_q;
     logic        bp_resolve_is_jump_q;
-    logic        bp_resolve_taken_q;
-    logic [31:0] bp_resolve_target_q;
+    (* extract_enable = "yes" *) logic        bp_resolve_taken_q;
+    (* extract_enable = "yes" *) logic [31:0] bp_resolve_target_q;
     logic        bp_resolve_pred_taken_q;
     logic [31:0] bp_resolve_pred_target_q;
 
+    (* direct_enable = "yes", max_fanout = 32 *) logic bp_resolve_ce;
+
     always_comb begin
-        hazard_id_rs1 = 5'd0;
-        hazard_id_rs2 = 5'd0;
-
-        if (if_valid) begin
-            case (if_instr[6:0])
-                OP_ALU,
-                OP_BRANCH,
-                OP_STORE: begin
-                    hazard_id_rs1 = if_instr[19:15];
-                    hazard_id_rs2 = if_instr[24:20];
-                end
-
-                OP_IMM,
-                OP_LOAD,
-                OP_JALR: begin
-                    hazard_id_rs1 = if_instr[19:15];
-                    hazard_id_rs2 = 5'd0;
-                end
-
-                default: begin
-                    hazard_id_rs1 = 5'd0;
-                    hazard_id_rs2 = 5'd0;
-                end
-            endcase
-        end
+        hazard_id_rs1 = if_valid ? if_instr[19:15] : 5'd0;
+        hazard_id_rs2 = if_valid ? if_instr[24:20] : 5'd0;
     end
 
     always_comb begin
@@ -158,6 +137,8 @@ module riscv_core (
         endcase
     end
 
+    assign bp_resolve_ce = !execute_stall && !bp_mispredict;
+
     always_ff @(posedge i_clk) begin
         if (i_rst) begin
             bp_resolve_valid_q       <= 1'b0;
@@ -171,7 +152,7 @@ module riscv_core (
         end else begin
             bp_resolve_valid_q <= 1'b0;
 
-            if (!execute_stall && !bp_mispredict) begin
+            if (bp_resolve_ce) begin
                 bp_resolve_valid_q <=
                     id_valid &&
                     !id_illegal &&
@@ -372,6 +353,7 @@ module riscv_core (
         .i_ex_rs2        (id_rs2),
         .i_ex_rd         (id_rd),
         .i_ex_mem_read   (id_mem_read),
+        .i_ex_reg_write  (id_reg_write),
         .i_ex_mispredict (bp_mispredict),
         .i_mem_rd        (ex_rd),
         .i_mem_reg_wr    (mem_can_forward),
