@@ -40,7 +40,3 @@ To keep the decode and execute logic clean, the project relies on a centralized 
 *   **Core Logic**: `alu.sv`, `reg_file.sv`, `hazard_unit.sv`, `branch_predictor.sv`.
 *   **Memory & SoC**: `l1_dcache.sv`, `data_memory.sv`, `instruction_memory.sv`, `dmem_addr_decoder.sv`.
 *   **UART & IO**: `uart_tx/rx.sv`, `uart_mmio.sv`, and the packet parser/loader stack.
-
-## Getting Started
-
-*(Add instructions here for your specific toolchain, e.g., how to run the testbench, compile with Vivado/Quartus, or the Python script needed to interface with the UART bootloader)*
